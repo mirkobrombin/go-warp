@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"encoding/json"
 	"sync/atomic"
 	"time"
 
@@ -28,11 +28,18 @@ type Validator struct {
 	mode       Mode
 	interval   time.Duration
 	mismatches uint64
+	digester   Digester
 }
 
 // New creates a new Validator.
 func New(c cache.Cache, s adapter.Store, mode Mode, interval time.Duration) *Validator {
-	return &Validator{cache: c, store: s, mode: mode, interval: interval}
+	return &Validator{
+		cache:    c,
+		store:    s,
+		mode:     mode,
+		interval: interval,
+		digester: JSONDigester{},
+	}
 }
 
 // Run starts the validation loop.
@@ -66,7 +73,15 @@ func (v *Validator) scan(ctx context.Context) {
 		if err != nil || sv == nil {
 			continue
 		}
-		if digest(cv) != digest(sv) {
+		cvDigest, err := v.digester.Digest(cv)
+		if err != nil {
+			continue
+		}
+		svDigest, err := v.digester.Digest(sv)
+		if err != nil {
+			continue
+		}
+		if cvDigest != svDigest {
 			atomic.AddUint64(&v.mismatches, 1)
 			if v.mode == ModeAutoHeal {
 				_ = v.cache.Set(ctx, k, sv, 0)
@@ -80,7 +95,26 @@ func (v *Validator) Metrics() uint64 {
 	return atomic.LoadUint64(&v.mismatches)
 }
 
-func digest(v any) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%v", v)))
-	return hex.EncodeToString(h[:])
+// SetDigester sets the digester used for value comparison.
+func (v *Validator) SetDigester(d Digester) {
+	if d != nil {
+		v.digester = d
+	}
+}
+
+// Digester provides value serialization and hashing.
+type Digester interface {
+	Digest(v any) (string, error)
+}
+
+// JSONDigester serializes values using JSON and hashes them with SHA256.
+type JSONDigester struct{}
+
+func (JSONDigester) Digest(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:]), nil
 }
