@@ -7,7 +7,7 @@ The `core` package provides the primary API used by applications. It coordinates
 Each key must be registered with a consistency mode and TTL:
 
 ```go
-w := core.New[string](cache.NewInMemory[merge.Value[string]](), adapter.NewInMemoryStore(), nil, merge.NewEngine[string]())
+w := core.New[string](cache.NewInMemory[merge.Value[string]](), adapter.NewInMemoryStore[string](), nil, merge.NewEngine[string]())
 w.Register("greeting", core.ModeStrongLocal, time.Minute)
 ```
 

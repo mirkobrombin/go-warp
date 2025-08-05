@@ -36,7 +36,7 @@ import (
 
 func main() {
     ctx := context.Background()
-    store := adapter.NewInMemoryStore()
+    store := adapter.NewInMemoryStore[string]()
     w := core.New[string](cache.NewInMemory[merge.Value[string]](), store, nil, merge.NewEngine[string]())
     w.Register("greeting", core.ModeStrongLocal, time.Minute)
     w.Warmup(ctx) // optional warmup from store
@@ -69,7 +69,7 @@ import (
 
 func main() {
     ctx := context.Background()
-    store := adapter.NewInMemoryStore()
+    store := adapter.NewInMemoryStore[int]()
     bus := syncbus.NewInMemoryBus()
     engine := merge.NewEngine[int]()
     engine.Register("counter", func(old, new int) (int, error) {
@@ -86,7 +86,7 @@ func main() {
     defer bus.Unsubscribe(ctx, "counter", ch)
     go func() {
         for range ch {
-            w2.Invalidate(ctx, "counter")
+            _ = w2.Invalidate(ctx, "counter")
         }
     }()
 

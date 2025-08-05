@@ -12,8 +12,8 @@ import (
 func TestValidatorAutoHeal(t *testing.T) {
 	ctx := context.Background()
 	c := cache.NewInMemory[string]()
-	s := adapter.NewInMemoryStore()
-	s.Set(ctx, "k", "v1")
+	s := adapter.NewInMemoryStore[string]()
+	_ = s.Set(ctx, "k", "v1")
 	if err := c.Set(ctx, "k", "v0", 0); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

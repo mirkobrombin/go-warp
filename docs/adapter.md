@@ -5,9 +5,9 @@ The `adapter` package abstracts access to the primary storage used as fallback a
 ## Store Interface
 
 ```go
-type Store interface {
-    Get(ctx context.Context, key string) (any, error)
-    Set(ctx context.Context, key string, value any) error
+type Store[T any] interface {
+    Get(ctx context.Context, key string) (T, bool, error)
+    Set(ctx context.Context, key string, value T) error
     Keys(ctx context.Context) ([]string, error)
 }
 ```
@@ -17,9 +17,9 @@ type Store interface {
 `InMemoryStore` is a simple reference implementation backed by a map. It is useful for tests and examples:
 
 ```go
-store := adapter.NewInMemoryStore()
+store := adapter.NewInMemoryStore[string]()
 _ = store.Set(ctx, "foo", "bar")
-value, _ := store.Get(ctx, "foo")
+value, ok, _ := store.Get(ctx, "foo")
 ```
 
 Custom adapters can be implemented to connect Warp with databases or other storage systems.

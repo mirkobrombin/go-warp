@@ -14,7 +14,7 @@ import (
 
 func main() {
 	ctx := context.Background()
-	store := adapter.NewInMemoryStore()
+	store := adapter.NewInMemoryStore[int]()
 	bus := syncbus.NewInMemoryBus()
 	engine := merge.NewEngine[int]()
 	engine.Register("counter", func(old, new int) (int, error) {

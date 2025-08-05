@@ -6,40 +6,44 @@ import (
 )
 
 // Store abstracts the primary storage used as fallback and warmup source.
-type Store interface {
+//
+// T represents the type of values stored in the adapter.
+type Store[T any] interface {
 	// Get retrieves the value for a key from the storage.
-	Get(ctx context.Context, key string) (any, error)
+	// The boolean return indicates whether the key was found.
+	Get(ctx context.Context, key string) (T, bool, error)
 	// Set stores the value for a key into the storage.
-	Set(ctx context.Context, key string, value any) error
+	Set(ctx context.Context, key string, value T) error
 	// Keys returns the list of keys available in the store. It is used for warmup
 	// and by the validator.
 	Keys(ctx context.Context) ([]string, error)
 }
 
 // InMemoryStore is a simple Store implementation backed by a map.
-type InMemoryStore struct {
+type InMemoryStore[T any] struct {
 	mu    sync.RWMutex
-	items map[string]any
+	items map[string]T
 }
 
 // NewInMemoryStore returns a new InMemoryStore.
-func NewInMemoryStore() *InMemoryStore {
-	return &InMemoryStore{items: make(map[string]any)}
+func NewInMemoryStore[T any]() *InMemoryStore[T] {
+	return &InMemoryStore[T]{items: make(map[string]T)}
 }
 
 // Get implements Store.Get.
-func (s *InMemoryStore) Get(ctx context.Context, key string) (any, error) {
+func (s *InMemoryStore[T]) Get(ctx context.Context, key string) (T, bool, error) {
 	s.mu.RLock()
 	v, ok := s.items[key]
 	s.mu.RUnlock()
 	if !ok {
-		return nil, nil
+		var zero T
+		return zero, false, nil
 	}
-	return v, nil
+	return v, true, nil
 }
 
 // Set implements Store.Set.
-func (s *InMemoryStore) Set(ctx context.Context, key string, value any) error {
+func (s *InMemoryStore[T]) Set(ctx context.Context, key string, value T) error {
 	s.mu.Lock()
 	s.items[key] = value
 	s.mu.Unlock()
@@ -47,7 +51,7 @@ func (s *InMemoryStore) Set(ctx context.Context, key string, value any) error {
 }
 
 // Keys implements Store.Keys.
-func (s *InMemoryStore) Keys(ctx context.Context) ([]string, error) {
+func (s *InMemoryStore[T]) Keys(ctx context.Context) ([]string, error) {
 	s.mu.RLock()
 	keys := make([]string, 0, len(s.items))
 	for k := range s.items {

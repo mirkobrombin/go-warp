@@ -32,7 +32,7 @@ func TestWarpSetGet(t *testing.T) {
 
 func TestWarpMerge(t *testing.T) {
 	ctx := context.Background()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), adapter.NewInMemoryStore(), nil, merge.NewEngine[int]())
+	w := New[int](cache.NewInMemory[merge.Value[int]](), adapter.NewInMemoryStore[int](), nil, merge.NewEngine[int]())
 	w.Register("cnt", ModeStrongLocal, time.Minute)
 	w.Merge("cnt", func(old, new int) (int, error) {
 		return old + new, nil
@@ -54,8 +54,8 @@ func TestWarpMerge(t *testing.T) {
 
 func TestWarpFallbackAndWarmup(t *testing.T) {
 	ctx := context.Background()
-	store := adapter.NewInMemoryStore()
-	store.Set(ctx, "foo", "bar")
+	store := adapter.NewInMemoryStore[string]()
+	_ = store.Set(ctx, "foo", "bar")
 	w := New[string](cache.NewInMemory[merge.Value[string]](), store, nil, merge.NewEngine[string]())
 	w.Register("foo", ModeStrongLocal, time.Minute)
 	// fallback

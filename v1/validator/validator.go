@@ -24,7 +24,7 @@ const (
 // Validator periodically compares cache and storage values.
 type Validator[T any] struct {
 	cache      cache.Cache[T]
-	store      adapter.Store
+	store      adapter.Store[T]
 	mode       Mode
 	interval   time.Duration
 	mismatches uint64
@@ -32,7 +32,7 @@ type Validator[T any] struct {
 }
 
 // New creates a new Validator.
-func New[T any](c cache.Cache[T], s adapter.Store, mode Mode, interval time.Duration) *Validator[T] {
+func New[T any](c cache.Cache[T], s adapter.Store[T], mode Mode, interval time.Duration) *Validator[T] {
 	return &Validator[T]{
 		cache:    c,
 		store:    s,
@@ -69,12 +69,8 @@ func (v *Validator[T]) scan(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		svAny, err := v.store.Get(ctx, k)
-		if err != nil || svAny == nil {
-			continue
-		}
-		sv, ok := svAny.(T)
-		if !ok {
+		sv, ok, err := v.store.Get(ctx, k)
+		if err != nil || !ok {
 			continue
 		}
 		cvDigest, err := v.digester.Digest(cv)
