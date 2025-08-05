@@ -106,7 +106,7 @@ func main() {
 
 ## Documentation
 
-See the [docs](docs/overview.md) directory for detailed guides on each module.
+See the [docs](docs/overview.md) directory for detailed guides on each module, including [deployment architecture](docs/overview.md#deployment).
 
 ## License
 
