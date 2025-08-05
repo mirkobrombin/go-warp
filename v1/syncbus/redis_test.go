@@ -96,3 +96,15 @@ func TestRedisBusDeduplicatePendingKeys(t *testing.T) {
 		t.Fatalf("expected delivered 0 got %d", metrics.Delivered)
 	}
 }
+
+func TestRedisBusPublishError(t *testing.T) {
+	bus, ctx := newRedisBus(t)
+	_ = bus.client.Close()
+	if err := bus.Publish(ctx, "key"); err == nil {
+		t.Fatal("expected publish error")
+	}
+	metrics := bus.Metrics()
+	if metrics.Published != 0 {
+		t.Fatalf("expected published 0 got %d", metrics.Published)
+	}
+}

@@ -43,7 +43,9 @@ func (b *RedisBus) Publish(ctx context.Context, key string) error {
 	b.mu.Unlock()
 
 	err := b.client.Publish(ctx, key, "1").Err()
-	atomic.AddUint64(&b.published, 1)
+	if err == nil {
+		atomic.AddUint64(&b.published, 1)
+	}
 
 	b.mu.Lock()
 	delete(b.pending, key)
