@@ -9,7 +9,7 @@ import (
 // Bus provides a simple pub/sub mechanism used by warp to propagate
 // invalidation events across nodes.
 type Bus interface {
-	Publish(ctx context.Context, key string)
+	Publish(ctx context.Context, key string) error
 	Subscribe(ctx context.Context, key string) (chan struct{}, error)
 	Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
 }
@@ -29,11 +29,11 @@ func NewInMemoryBus() *InMemoryBus {
 }
 
 // Publish implements Bus.Publish.
-func (b *InMemoryBus) Publish(ctx context.Context, key string) {
+func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
-		return // deduplicate
+		return nil // deduplicate
 	}
 	b.pending[key] = struct{}{}
 	chans := append([]chan struct{}(nil), b.subs[key]...)
@@ -49,6 +49,7 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) {
 	b.mu.Lock()
 	delete(b.pending, key)
 	b.mu.Unlock()
+	return nil
 }
 
 // Subscribe implements Bus.Subscribe.

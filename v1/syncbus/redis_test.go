@@ -31,7 +31,9 @@ func TestRedisBusPublishSubscribeFlowAndMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	bus.Publish(ctx, "key")
+	if err := bus.Publish(ctx, "key"); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
 	select {
 	case <-ch:
 	case <-time.After(time.Second):
@@ -78,7 +80,9 @@ func TestRedisBusDeduplicatePendingKeys(t *testing.T) {
 	bus.mu.Lock()
 	bus.pending["key"] = struct{}{}
 	bus.mu.Unlock()
-	bus.Publish(ctx, "key")
+	if err := bus.Publish(ctx, "key"); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
 	select {
 	case <-ch:
 		t.Fatal("unexpected publish when key pending")

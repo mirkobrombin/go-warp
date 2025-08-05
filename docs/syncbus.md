@@ -6,7 +6,7 @@ The `syncbus` package provides a pluggable mechanism to propagate invalidations 
 
 ```go
 type Bus interface {
-    Publish(ctx context.Context, key string)
+    Publish(ctx context.Context, key string) error
     Subscribe(ctx context.Context, key string) (chan struct{}, error)
     Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
 }
@@ -25,7 +25,7 @@ bus := syncbus.NewInMemoryBus()
 ch, _ := bus.Subscribe(ctx, "greeting")
 defer bus.Unsubscribe(ctx, "greeting", ch)
 go func() { for range ch { fmt.Println("invalidated") } }()
-bus.Publish(ctx, "greeting")
+_ = bus.Publish(ctx, "greeting")
 metrics := bus.Metrics() // Published, Delivered
 ```
 

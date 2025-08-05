@@ -16,7 +16,9 @@ func TestPublishSubscribeFlowAndMetrics(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	bus.Publish(context.Background(), "key")
+	if err := bus.Publish(context.Background(), "key"); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
 
 	select {
 	case <-ch:
@@ -71,7 +73,9 @@ func TestDeduplicatePendingKeys(t *testing.T) {
 	bus.pending["key"] = struct{}{}
 	bus.mu.Unlock()
 
-	bus.Publish(context.Background(), "key")
+	if err := bus.Publish(context.Background(), "key"); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
 
 	select {
 	case <-ch:

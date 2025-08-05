@@ -25,6 +25,12 @@ func (s errStore[T]) Set(ctx context.Context, key string, value T) error { retur
 
 func (s errStore[T]) Keys(ctx context.Context) ([]string, error) { return nil, nil }
 
+type errBus struct{ err error }
+
+func (b errBus) Publish(ctx context.Context, key string) error                       { return b.err }
+func (b errBus) Subscribe(ctx context.Context, key string) (chan struct{}, error)    { return nil, nil }
+func (b errBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error { return nil }
+
 func TestWarpSetGet(t *testing.T) {
 	ctx := context.Background()
 	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, syncbus.NewInMemoryBus(), merge.NewEngine[string]())
@@ -121,5 +127,25 @@ func TestWarpRegisterDuplicate(t *testing.T) {
 	reg := w.regs["foo"]
 	if reg.mode != ModeStrongLocal || reg.ttl != time.Minute {
 		t.Fatalf("registration should not be overwritten")
+	}
+}
+
+func TestWarpSetPublishError(t *testing.T) {
+	ctx := context.Background()
+	expected := errors.New("boom")
+	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, errBus{err: expected}, merge.NewEngine[string]())
+	w.Register("foo", ModeEventualDistributed, time.Minute)
+	if err := w.Set(ctx, "foo", "bar"); !errors.Is(err, expected) {
+		t.Fatalf("expected %v, got %v", expected, err)
+	}
+}
+
+func TestWarpInvalidatePublishError(t *testing.T) {
+	ctx := context.Background()
+	expected := errors.New("boom")
+	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, errBus{err: expected}, merge.NewEngine[string]())
+	w.Register("foo", ModeEventualDistributed, time.Minute)
+	if err := w.Invalidate(ctx, "foo"); !errors.Is(err, expected) {
+		t.Fatalf("expected %v, got %v", expected, err)
 	}
 }

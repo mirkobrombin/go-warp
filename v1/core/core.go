@@ -124,7 +124,9 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	}
 
 	if reg.mode != ModeStrongLocal && w.bus != nil {
-		w.bus.Publish(ctx, key)
+		if err := w.bus.Publish(ctx, key); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -140,7 +142,9 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 	reg := w.regs[key]
 	w.mu.RUnlock()
 	if reg.mode != ModeStrongLocal && w.bus != nil {
-		w.bus.Publish(ctx, key)
+		if err := w.bus.Publish(ctx, key); err != nil {
+			return err
+		}
 	}
 	return nil
 }

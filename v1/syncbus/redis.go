@@ -33,21 +33,22 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 }
 
 // Publish implements Bus.Publish.
-func (b *RedisBus) Publish(ctx context.Context, key string) {
+func (b *RedisBus) Publish(ctx context.Context, key string) error {
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
-		return // deduplicate
+		return nil // deduplicate
 	}
 	b.pending[key] = struct{}{}
 	b.mu.Unlock()
 
-	_ = b.client.Publish(ctx, key, "1").Err()
+	err := b.client.Publish(ctx, key, "1").Err()
 	atomic.AddUint64(&b.published, 1)
 
 	b.mu.Lock()
 	delete(b.pending, key)
 	b.mu.Unlock()
+	return err
 }
 
 // Subscribe implements Bus.Subscribe.
