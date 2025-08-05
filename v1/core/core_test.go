@@ -109,3 +109,17 @@ func TestWarpGetStoreError(t *testing.T) {
 		t.Fatalf("expected %v, got %v", expected, err)
 	}
 }
+
+func TestWarpRegisterDuplicate(t *testing.T) {
+	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, nil, merge.NewEngine[string]())
+	if !w.Register("foo", ModeStrongLocal, time.Minute) {
+		t.Fatalf("expected first registration to succeed")
+	}
+	if w.Register("foo", ModeEventualDistributed, 2*time.Minute) {
+		t.Fatalf("expected duplicate registration to fail")
+	}
+	reg := w.regs["foo"]
+	if reg.mode != ModeStrongLocal || reg.ttl != time.Minute {
+		t.Fatalf("registration should not be overwritten")
+	}
+}

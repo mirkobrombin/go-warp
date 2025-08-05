@@ -53,10 +53,15 @@ func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.B
 }
 
 // Register registers a key with a specific mode and TTL.
-func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration) {
+// It returns false if the key was already registered.
+func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration) bool {
 	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, exists := w.regs[key]; exists {
+		return false
+	}
 	w.regs[key] = registration{ttl: ttl, mode: mode}
-	w.mu.Unlock()
+	return true
 }
 
 // Unregister removes a key registration.
