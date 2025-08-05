@@ -149,3 +149,20 @@ func TestWarpInvalidatePublishError(t *testing.T) {
 		t.Fatalf("expected %v, got %v", expected, err)
 	}
 }
+
+func TestWarpUnregisteredKey(t *testing.T) {
+	ctx := context.Background()
+	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, nil, merge.NewEngine[string]())
+
+	if _, err := w.Get(ctx, "foo"); !errors.Is(err, ErrUnregistered) {
+		t.Fatalf("expected ErrUnregistered, got %v", err)
+	}
+
+	if err := w.Set(ctx, "foo", "bar"); !errors.Is(err, ErrUnregistered) {
+		t.Fatalf("expected ErrUnregistered, got %v", err)
+	}
+
+	if err := w.Invalidate(ctx, "foo"); !errors.Is(err, ErrUnregistered) {
+		t.Fatalf("expected ErrUnregistered, got %v", err)
+	}
+}

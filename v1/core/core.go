@@ -74,15 +74,22 @@ func (w *Warp[T]) Unregister(key string) {
 // ErrNotFound is returned when a key does not exist in the cache.
 var ErrNotFound = errors.New("warp: not found")
 
+// ErrUnregistered is returned when a key is not registered.
+var ErrUnregistered = errors.New("warp: key not registered")
+
 // Get retrieves a value from the cache.
 func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
+	w.mu.RLock()
+	reg, ok := w.regs[key]
+	w.mu.RUnlock()
+	if !ok {
+		var zero T
+		return zero, ErrUnregistered
+	}
 	if v, ok := w.cache.Get(ctx, key); ok {
 		return v.Data, nil
 	}
 	if w.store != nil {
-		w.mu.RLock()
-		reg := w.regs[key]
-		w.mu.RUnlock()
 		v, ok, err := w.store.Get(ctx, key)
 		if err != nil {
 			var zero T
@@ -102,8 +109,11 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 // It returns an error if persisting the value to the underlying store fails.
 func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	w.mu.RLock()
-	reg := w.regs[key]
+	reg, ok := w.regs[key]
 	w.mu.RUnlock()
+	if !ok {
+		return ErrUnregistered
+	}
 
 	now := time.Now()
 	newVal := merge.Value[T]{Data: value, Timestamp: now}
@@ -135,12 +145,15 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 // Invalidate removes a key and propagates the invalidation if required.
 // It returns an error if removing the key from the cache fails.
 func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
+	w.mu.RLock()
+	reg, ok := w.regs[key]
+	w.mu.RUnlock()
+	if !ok {
+		return ErrUnregistered
+	}
 	if err := w.cache.Invalidate(ctx, key); err != nil {
 		return err
 	}
-	w.mu.RLock()
-	reg := w.regs[key]
-	w.mu.RUnlock()
 	if reg.mode != ModeStrongLocal && w.bus != nil {
 		if err := w.bus.Publish(ctx, key); err != nil {
 			return err
