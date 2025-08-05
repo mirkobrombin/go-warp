@@ -193,27 +193,34 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 
 // validatorCache adapts the Warp cache to the Validator interface by operating on raw values.
 type validatorCache[T any] struct {
-	c cache.Cache[merge.Value[T]]
+	w *Warp[T]
 }
 
 func (vc validatorCache[T]) Get(ctx context.Context, key string) (T, bool) {
-	if v, ok := vc.c.Get(ctx, key); ok {
+	if v, ok := vc.w.cache.Get(ctx, key); ok {
 		return v.Data, true
 	}
 	var zero T
 	return zero, false
 }
 
-func (vc validatorCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
+func (vc validatorCache[T]) Set(ctx context.Context, key string, value T, _ time.Duration) error {
 	mv := merge.Value[T]{Data: value, Timestamp: time.Now()}
-	return vc.c.Set(ctx, key, mv, ttl)
+	vc.w.mu.RLock()
+	reg, ok := vc.w.regs[key]
+	vc.w.mu.RUnlock()
+	var ttl time.Duration
+	if ok {
+		ttl = reg.ttl
+	}
+	return vc.w.cache.Set(ctx, key, mv, ttl)
 }
 
 func (vc validatorCache[T]) Invalidate(ctx context.Context, key string) error {
-	return vc.c.Invalidate(ctx, key)
+	return vc.w.cache.Invalidate(ctx, key)
 }
 
 // Validator returns a validator instance bound to this warp.
 func (w *Warp[T]) Validator(mode validator.Mode, interval time.Duration) *validator.Validator[T] {
-	return validator.New[T](validatorCache[T]{w.cache}, w.store, mode, interval)
+	return validator.New[T](validatorCache[T]{w: w}, w.store, mode, interval)
 }

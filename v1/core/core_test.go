@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/cache"
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
+	"github.com/mirkobrombin/go-warp/v1/validator"
 )
 
 type errStore[T any] struct {
@@ -30,6 +32,48 @@ type errBus struct{ err error }
 func (b errBus) Publish(ctx context.Context, key string) error                       { return b.err }
 func (b errBus) Subscribe(ctx context.Context, key string) (chan struct{}, error)    { return nil, nil }
 func (b errBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error { return nil }
+
+type ttlCache[T any] struct {
+	mu    sync.Mutex
+	items map[string]T
+	ttls  map[string]time.Duration
+}
+
+func newTTLCache[T any]() *ttlCache[T] {
+	return &ttlCache[T]{
+		items: make(map[string]T),
+		ttls:  make(map[string]time.Duration),
+	}
+}
+
+func (c *ttlCache[T]) Get(ctx context.Context, key string) (T, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.items[key]
+	return v, ok
+}
+
+func (c *ttlCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items[key] = value
+	c.ttls[key] = ttl
+	return nil
+}
+
+func (c *ttlCache[T]) Invalidate(ctx context.Context, key string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.items, key)
+	delete(c.ttls, key)
+	return nil
+}
+
+func (c *ttlCache[T]) TTL(key string) time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ttls[key]
+}
 
 func TestWarpSetGet(t *testing.T) {
 	ctx := context.Background()
@@ -164,5 +208,34 @@ func TestWarpUnregisteredKey(t *testing.T) {
 
 	if err := w.Invalidate(ctx, "foo"); !errors.Is(err, ErrUnregistered) {
 		t.Fatalf("expected ErrUnregistered, got %v", err)
+	}
+}
+
+func TestWarpValidatorAutoHealTTL(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c := newTTLCache[merge.Value[string]]()
+	store := adapter.NewInMemoryStore[string]()
+	_ = store.Set(ctx, "k", "v1")
+
+	w := New[string](c, store, nil, merge.NewEngine[string]())
+	ttl := time.Minute
+	w.Register("k", ModeStrongLocal, ttl)
+
+	mv := merge.Value[string]{Data: "v0", Timestamp: time.Now()}
+	_ = c.Set(ctx, "k", mv, ttl)
+	orig := c.TTL("k")
+
+	v := w.Validator(validator.ModeAutoHeal, time.Millisecond)
+	go v.Run(ctx)
+	time.Sleep(5 * time.Millisecond)
+
+	healed, ok := c.Get(ctx, "k")
+	if !ok || healed.Data != "v1" {
+		t.Fatalf("expected value healed to v1, got %v", healed.Data)
+	}
+	if newTTL := c.TTL("k"); newTTL != orig {
+		t.Fatalf("expected TTL %v, got %v", orig, newTTL)
 	}
 }
