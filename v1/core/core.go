@@ -84,7 +84,8 @@ func (w *Warp) Get(ctx context.Context, key string) (any, error) {
 }
 
 // Set stores a value in the cache, applying merge strategies and publishing if needed.
-func (w *Warp) Set(ctx context.Context, key string, value any) {
+// It returns an error if persisting the value to the underlying store fails.
+func (w *Warp) Set(ctx context.Context, key string, value any) error {
 	w.mu.RLock()
 	reg := w.regs[key]
 	w.mu.RUnlock()
@@ -102,12 +103,16 @@ func (w *Warp) Set(ctx context.Context, key string, value any) {
 
 	w.cache.Set(ctx, key, newVal, reg.ttl)
 	if w.store != nil {
-		_ = w.store.Set(ctx, key, newVal.Data)
+		if err := w.store.Set(ctx, key, newVal.Data); err != nil {
+			return err
+		}
 	}
 
 	if reg.mode != ModeStrongLocal && w.bus != nil {
 		w.bus.Publish(ctx, key)
 	}
+
+	return nil
 }
 
 // Invalidate removes a key and propagates the invalidation if required.

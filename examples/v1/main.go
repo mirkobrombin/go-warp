@@ -15,7 +15,9 @@ func main() {
 	ctx := context.Background()
 	w := core.New(cache.NewInMemory(), adapter.NewInMemoryStore(), nil, merge.NewEngine())
 	w.Register("greeting", core.ModeStrongLocal, time.Minute)
-	w.Set(ctx, "greeting", "Warp example")
+	if err := w.Set(ctx, "greeting", "Warp example"); err != nil {
+		panic(err)
+	}
 	v, _ := w.Get(ctx, "greeting")
 	fmt.Println(v)
 }

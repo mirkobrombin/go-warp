@@ -34,8 +34,12 @@ func main() {
 		}
 	}()
 
-	w1.Set(ctx, "counter", 10)
-	w2.Set(ctx, "counter", 5)
+	if err := w1.Set(ctx, "counter", 10); err != nil {
+		panic(err)
+	}
+	if err := w2.Set(ctx, "counter", 5); err != nil {
+		panic(err)
+	}
 
 	time.Sleep(10 * time.Millisecond)
 	v1, _ := w1.Get(ctx, "counter")

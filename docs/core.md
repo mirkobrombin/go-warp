@@ -21,7 +21,9 @@ The available modes are:
 
 ```go
 ctx := context.Background()
-w.Set(ctx, "greeting", "hello")
+if err := w.Set(ctx, "greeting", "hello"); err != nil {
+    // handle error
+}
 value, err := w.Get(ctx, "greeting")
 w.Invalidate(ctx, "greeting")
 ```

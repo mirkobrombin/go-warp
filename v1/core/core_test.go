@@ -15,7 +15,9 @@ func TestWarpSetGet(t *testing.T) {
 	ctx := context.Background()
 	w := New(cache.NewInMemory(), nil, syncbus.NewInMemoryBus(), merge.NewEngine())
 	w.Register("foo", ModeStrongLocal, time.Minute)
-	w.Set(ctx, "foo", "bar")
+	if err := w.Set(ctx, "foo", "bar"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	v, err := w.Get(ctx, "foo")
 	if err != nil || v.(string) != "bar" {
 		t.Fatalf("unexpected value: %v, err: %v", v, err)
@@ -33,8 +35,12 @@ func TestWarpMerge(t *testing.T) {
 	w.Merge("cnt", func(old, new any) (any, error) {
 		return old.(int) + new.(int), nil
 	})
-	w.Set(ctx, "cnt", 1)
-	w.Set(ctx, "cnt", 2)
+	if err := w.Set(ctx, "cnt", 1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := w.Set(ctx, "cnt", 2); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	v, err := w.Get(ctx, "cnt")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

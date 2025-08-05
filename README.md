@@ -39,7 +39,9 @@ func main() {
     w := core.New(cache.NewInMemory(), store, nil, merge.NewEngine())
     w.Register("greeting", core.ModeStrongLocal, time.Minute)
     w.Warmup(ctx) // optional warmup from store
-    w.Set(ctx, "greeting", "hello")
+    if err := w.Set(ctx, "greeting", "hello"); err != nil {
+        panic(err)
+    }
     v, _ := w.Get(ctx, "greeting")
     fmt.Println(v)
 }
@@ -86,8 +88,12 @@ func main() {
         }
     }()
 
-    w1.Set(ctx, "counter", 10)
-    w2.Set(ctx, "counter", 5)
+    if err := w1.Set(ctx, "counter", 10); err != nil {
+        panic(err)
+    }
+    if err := w2.Set(ctx, "counter", 5); err != nil {
+        panic(err)
+    }
 
     time.Sleep(10 * time.Millisecond)
     v1, _ := w1.Get(ctx, "counter")
