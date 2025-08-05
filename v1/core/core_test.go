@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,19 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
 )
+
+type errStore[T any] struct {
+	err error
+}
+
+func (s errStore[T]) Get(ctx context.Context, key string) (T, bool, error) {
+	var zero T
+	return zero, false, s.err
+}
+
+func (s errStore[T]) Set(ctx context.Context, key string, value T) error { return nil }
+
+func (s errStore[T]) Keys(ctx context.Context) ([]string, error) { return nil, nil }
 
 func TestWarpSetGet(t *testing.T) {
 	ctx := context.Background()
@@ -83,5 +97,15 @@ func TestWarpUnregister(t *testing.T) {
 	w.Unregister("foo")
 	if _, ok := w.regs["foo"]; ok {
 		t.Fatalf("expected foo to be unregistered")
+	}
+}
+
+func TestWarpGetStoreError(t *testing.T) {
+	ctx := context.Background()
+	expected := errors.New("boom")
+	w := New[string](cache.NewInMemory[merge.Value[string]](), errStore[string]{err: expected}, nil, merge.NewEngine[string]())
+	w.Register("foo", ModeStrongLocal, time.Minute)
+	if _, err := w.Get(ctx, "foo"); !errors.Is(err, expected) {
+		t.Fatalf("expected %v, got %v", expected, err)
 	}
 }

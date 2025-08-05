@@ -78,7 +78,12 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		w.mu.RLock()
 		reg := w.regs[key]
 		w.mu.RUnlock()
-		if v, ok, err := w.store.Get(ctx, key); err == nil && ok {
+		v, ok, err := w.store.Get(ctx, key)
+		if err != nil {
+			var zero T
+			return zero, err
+		}
+		if ok {
 			mv := merge.Value[T]{Data: v, Timestamp: time.Now()}
 			_ = w.cache.Set(ctx, key, mv, reg.ttl)
 			return mv.Data, nil
