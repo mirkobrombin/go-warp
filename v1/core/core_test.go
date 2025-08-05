@@ -73,3 +73,15 @@ func TestWarpFallbackAndWarmup(t *testing.T) {
 		t.Fatalf("expected warmup to load value, got %v err %v", v, err)
 	}
 }
+
+func TestWarpUnregister(t *testing.T) {
+	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, nil, merge.NewEngine[string]())
+	w.Register("foo", ModeStrongLocal, time.Minute)
+	if _, ok := w.regs["foo"]; !ok {
+		t.Fatalf("expected foo to be registered")
+	}
+	w.Unregister("foo")
+	if _, ok := w.regs["foo"]; ok {
+		t.Fatalf("expected foo to be unregistered")
+	}
+}

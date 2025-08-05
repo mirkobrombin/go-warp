@@ -59,6 +59,13 @@ func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration) {
 	w.mu.Unlock()
 }
 
+// Unregister removes a key registration.
+func (w *Warp[T]) Unregister(key string) {
+	w.mu.Lock()
+	delete(w.regs, key)
+	w.mu.Unlock()
+}
+
 // ErrNotFound is returned when a key does not exist in the cache.
 var ErrNotFound = errors.New("warp: not found")
 

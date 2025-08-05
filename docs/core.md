@@ -11,6 +11,12 @@ w := core.New[string](cache.NewInMemory[merge.Value[string]](), adapter.NewInMem
 w.Register("greeting", core.ModeStrongLocal, time.Minute)
 ```
 
+To remove a registration, call `Unregister`:
+
+```go
+w.Unregister("greeting")
+```
+
 The available modes are:
 
 - `ModeStrongLocal` – data is kept locally with optional fallback to the store.
