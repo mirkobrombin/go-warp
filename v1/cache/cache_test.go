@@ -27,3 +27,18 @@ func TestInMemoryCache(t *testing.T) {
 		t.Fatalf("unexpected metrics: %+v", m)
 	}
 }
+
+func TestInMemoryCacheSweeper(t *testing.T) {
+	ctx := context.Background()
+	c := NewInMemory(WithSweepInterval(5 * time.Millisecond))
+	if err := c.Set(ctx, "foo", "bar", 5*time.Millisecond); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	c.mu.RLock()
+	_, ok := c.items["foo"]
+	c.mu.RUnlock()
+	if ok {
+		t.Fatalf("expected key to be swept")
+	}
+}

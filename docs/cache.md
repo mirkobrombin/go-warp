@@ -14,12 +14,18 @@ type Cache interface {
 
 ## In-Memory Cache
 
-`InMemoryCache` is a simple map based cache with TTL support and basic metrics:
+`InMemoryCache` is a simple map based cache with TTL support and basic metrics.
+It also runs a background goroutine that periodically removes expired items.
+The sweep happens every minute by default and can be customized:
 
 ```go
-c := cache.NewInMemory()
+c := cache.NewInMemory(cache.WithSweepInterval(30 * time.Second))
 stats := c.Metrics() // Hits, Misses, Size
 ```
+
+The sweeper adds a small amount of overhead as it iterates over cached items at
+each interval. For most workloads this is negligible, but very large caches may
+see increased CPU usage during sweeps.
 
 ## Redis Cache
 

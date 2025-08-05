@@ -5,7 +5,8 @@ Warp is a data orchestration and synchronization layer for distributed Go backen
 ## Features
 
 - **Configurable Consistency** – choose between strong local, eventual distributed and strong distributed modes per key.
-- **Pluggable Cache** – in-memory and Redis caches with TTL, warmup and metrics.
+- **Pluggable Cache** – in-memory and Redis caches with TTL, warmup, metrics and
+  background eviction of expired items.
 - **Storage Adapters** – abstract fallback storage for warmup and persistent writes.
 - **Sync Bus** – propagate invalidations across nodes through a pub/sub interface.
 - **Merge Engine** – resolve conflicts with last-write-wins or custom merge functions.

@@ -20,10 +20,11 @@ type Cache interface {
 
 // InMemoryCache is a simple in-memory cache implementation with TTL support.
 type InMemoryCache struct {
-	mu     sync.RWMutex
-	items  map[string]item
-	hits   uint64
-	misses uint64
+	mu            sync.RWMutex
+	items         map[string]item
+	hits          uint64
+	misses        uint64
+	sweepInterval time.Duration
 }
 
 type item struct {
@@ -31,9 +32,38 @@ type item struct {
 	expiresAt time.Time
 }
 
+// InMemoryOption configures an InMemoryCache.
+type InMemoryOption func(*InMemoryCache)
+
+// WithSweepInterval sets the interval at which expired items are removed.
+// A zero or negative duration disables the background sweeper.
+func WithSweepInterval(d time.Duration) InMemoryOption {
+	return func(c *InMemoryCache) {
+		c.sweepInterval = d
+	}
+}
+
+// defaultSweepInterval is the default period for removing expired items.
+// The value is chosen to balance timely cleanup with minimal overhead.
+const defaultSweepInterval = time.Minute
+
 // NewInMemory returns a new InMemoryCache instance.
-func NewInMemory() *InMemoryCache {
-	return &InMemoryCache{items: make(map[string]item)}
+//
+// An optional sweep interval can be provided using WithSweepInterval. When
+// enabled, a background goroutine periodically removes expired items from the
+// cache. The default interval is one minute.
+func NewInMemory(opts ...InMemoryOption) *InMemoryCache {
+	c := &InMemoryCache{
+		items:         make(map[string]item),
+		sweepInterval: defaultSweepInterval,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	if c.sweepInterval > 0 {
+		go c.sweeper()
+	}
+	return c
 }
 
 // Get implements Cache.Get.
@@ -72,6 +102,22 @@ func (c *InMemoryCache) Invalidate(ctx context.Context, key string) error {
 	delete(c.items, key)
 	c.mu.Unlock()
 	return nil
+}
+
+// sweeper periodically removes expired items from the cache.
+func (c *InMemoryCache) sweeper() {
+	ticker := time.NewTicker(c.sweepInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		c.mu.Lock()
+		for k, it := range c.items {
+			if !it.expiresAt.IsZero() && now.After(it.expiresAt) {
+				delete(c.items, k)
+			}
+		}
+		c.mu.Unlock()
+	}
 }
 
 // Stats reports basic metrics about cache usage.
