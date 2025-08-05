@@ -77,6 +77,12 @@ func NewInMemory[T any](opts ...InMemoryOption[T]) *InMemoryCache[T] {
 
 // Get implements Cache.Get.
 func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool) {
+	select {
+	case <-ctx.Done():
+		var zero T
+		return zero, false
+	default:
+	}
 	c.mu.RLock()
 	it, ok := c.items[key]
 	c.mu.RUnlock()
@@ -91,27 +97,53 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool) {
 		var zero T
 		return zero, false
 	}
+	select {
+	case <-ctx.Done():
+		var zero T
+		return zero, false
+	default:
+	}
 	atomic.AddUint64(&c.hits, 1)
 	return it.value, true
 }
 
 // Set implements Cache.Set.
 func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	var exp time.Time
 	if ttl > 0 {
 		exp = time.Now().Add(ttl)
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	c.items[key] = item[T]{value: value, expiresAt: exp}
-	c.mu.Unlock()
 	return nil
 }
 
 // Invalidate implements Cache.Invalidate.
 func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	delete(c.items, key)
-	c.mu.Unlock()
 	return nil
 }
 

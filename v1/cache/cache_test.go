@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -42,5 +43,42 @@ func TestInMemoryCacheSweeper(t *testing.T) {
 	c.mu.RUnlock()
 	if ok {
 		t.Fatalf("expected key to be swept")
+	}
+}
+
+func TestInMemoryCacheContext(t *testing.T) {
+	c := NewInMemory[string]()
+	defer c.Close()
+
+	// Set with canceled context should fail and not store the item.
+	ctxSet, cancelSet := context.WithCancel(context.Background())
+	cancelSet()
+	if err := c.Set(ctxSet, "a", "b", time.Minute); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled error, got %v", err)
+	}
+	if _, ok := c.Get(context.Background(), "a"); ok {
+		t.Fatalf("item should not be stored when context is canceled")
+	}
+
+	// Prepare an item for further context tests.
+	if err := c.Set(context.Background(), "foo", "bar", time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Get with canceled context should not retrieve the item.
+	ctxGet, cancelGet := context.WithCancel(context.Background())
+	cancelGet()
+	if v, ok := c.Get(ctxGet, "foo"); ok || v != "" {
+		t.Fatalf("expected canceled context to prevent retrieval")
+	}
+
+	// Invalidate with canceled context should fail and keep the item.
+	ctxInv, cancelInv := context.WithCancel(context.Background())
+	cancelInv()
+	if err := c.Invalidate(ctxInv, "foo"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled error, got %v", err)
+	}
+	if v, ok := c.Get(context.Background(), "foo"); !ok || v != "bar" {
+		t.Fatalf("item should remain after canceled invalidate")
 	}
 }
