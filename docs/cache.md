@@ -33,7 +33,7 @@ see increased CPU usage during sweeps.
 
 ```go
 client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-c := cache.NewRedis[string](client)
+c := cache.NewRedis[string](client, nil) // uses JSON serialization by default
 ```
 
 Both caches implement the same interface and can be swapped depending on deployment needs.
