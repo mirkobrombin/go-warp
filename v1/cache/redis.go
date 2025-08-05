@@ -8,33 +8,38 @@ import (
 )
 
 // RedisCache implements Cache using a Redis backend.
-type RedisCache struct {
+type RedisCache[T any] struct {
 	client *redis.Client
 }
 
 // NewRedis returns a new RedisCache.
-func NewRedis(client *redis.Client) *RedisCache {
-	return &RedisCache{client: client}
+func NewRedis[T any](client *redis.Client) *RedisCache[T] {
+	return &RedisCache[T]{client: client}
 }
 
 // Get retrieves the value for the given key.
-func (c *RedisCache) Get(ctx context.Context, key string) (any, bool) {
+func (c *RedisCache[T]) Get(ctx context.Context, key string) (T, bool) {
+	var zero T
 	res, err := c.client.Get(ctx, key).Result()
 	if err == redis.Nil {
-		return nil, false
+		return zero, false
 	}
 	if err != nil {
-		return nil, false
+		return zero, false
 	}
-	return res, true
+	v, ok := any(res).(T)
+	if !ok {
+		return zero, false
+	}
+	return v, true
 }
 
 // Set stores the value for the given key for the specified TTL.
-func (c *RedisCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
+func (c *RedisCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
 	return c.client.Set(ctx, key, value, ttl).Err()
 }
 
 // Invalidate removes the key from Redis.
-func (c *RedisCache) Invalidate(ctx context.Context, key string) error {
+func (c *RedisCache[T]) Invalidate(ctx context.Context, key string) error {
 	return c.client.Del(ctx, key).Err()
 }

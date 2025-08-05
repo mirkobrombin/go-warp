@@ -5,9 +5,9 @@ The `cache` package defines the `Cache` interface and provides in-memory and Red
 ## Interface
 
 ```go
-type Cache interface {
-    Get(ctx context.Context, key string) (any, bool)
-    Set(ctx context.Context, key string, value any, ttl time.Duration)
+type Cache[T any] interface {
+    Get(ctx context.Context, key string) (T, bool)
+    Set(ctx context.Context, key string, value T, ttl time.Duration)
     Invalidate(ctx context.Context, key string)
 }
 ```
@@ -19,7 +19,7 @@ It also runs a background goroutine that periodically removes expired items.
 The sweep happens every minute by default and can be customized:
 
 ```go
-c := cache.NewInMemory(cache.WithSweepInterval(30 * time.Second))
+c := cache.NewInMemory[string](cache.WithSweepInterval[string](30 * time.Second))
 stats := c.Metrics() // Hits, Misses, Size
 ```
 
@@ -33,7 +33,7 @@ see increased CPU usage during sweeps.
 
 ```go
 client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-c := cache.NewRedis(client)
+c := cache.NewRedis[string](client)
 ```
 
 Both caches implement the same interface and can be swapped depending on deployment needs.

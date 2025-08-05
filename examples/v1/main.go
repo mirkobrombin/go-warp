@@ -13,7 +13,7 @@ import (
 
 func main() {
 	ctx := context.Background()
-	w := core.New(cache.NewInMemory(), adapter.NewInMemoryStore(), nil, merge.NewEngine())
+	w := core.New[string](cache.NewInMemory[merge.Value[string]](), adapter.NewInMemoryStore(), nil, merge.NewEngine[string]())
 	w.Register("greeting", core.ModeStrongLocal, time.Minute)
 	if err := w.Set(ctx, "greeting", "Warp example"); err != nil {
 		panic(err)

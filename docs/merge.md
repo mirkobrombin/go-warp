@@ -7,9 +7,9 @@ Concurrent writes or cache inconsistencies can be resolved through the `merge` p
 The default strategy is **last-write-wins**. Custom merge functions can be registered for specific keys:
 
 ```go
-engine := merge.NewEngine()
-engine.Register("counter", func(old, new any) (any, error) {
-    return old.(int) + new.(int), nil
+engine := merge.NewEngine[int]()
+engine.Register("counter", func(old, new int) (int, error) {
+    return old + new, nil
 })
 ```
 

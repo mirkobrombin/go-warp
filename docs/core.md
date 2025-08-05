@@ -7,7 +7,7 @@ The `core` package provides the primary API used by applications. It coordinates
 Each key must be registered with a consistency mode and TTL:
 
 ```go
-w := core.New(cache.NewInMemory(), adapter.NewInMemoryStore(), nil, merge.NewEngine())
+w := core.New[string](cache.NewInMemory[merge.Value[string]](), adapter.NewInMemoryStore(), nil, merge.NewEngine[string]())
 w.Register("greeting", core.ModeStrongLocal, time.Minute)
 ```
 
@@ -35,8 +35,8 @@ w.Invalidate(ctx, "greeting")
 Custom merge functions can be registered per key through the merge engine:
 
 ```go
-w.Merge("counter", func(old, new any) (any, error) {
-    return old.(int) + new.(int), nil
+w.Merge("counter", func(old, new int) (int, error) {
+    return old + new, nil
 })
 ```
 

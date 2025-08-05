@@ -8,37 +8,39 @@ import (
 )
 
 // Cache defines the basic operations for a cache layer.
-type Cache interface {
+//
+// T represents the type of values stored in the cache.
+type Cache[T any] interface {
 	// Get retrieves a value for the given key. The boolean return
 	// indicates whether the key was found.
-	Get(ctx context.Context, key string) (any, bool)
+	Get(ctx context.Context, key string) (T, bool)
 	// Set stores the value for the given key for the specified TTL.
-	Set(ctx context.Context, key string, value any, ttl time.Duration) error
+	Set(ctx context.Context, key string, value T, ttl time.Duration) error
 	// Invalidate removes the key from the cache.
 	Invalidate(ctx context.Context, key string) error
 }
 
 // InMemoryCache is a simple in-memory cache implementation with TTL support.
-type InMemoryCache struct {
+type InMemoryCache[T any] struct {
 	mu            sync.RWMutex
-	items         map[string]item
+	items         map[string]item[T]
 	hits          uint64
 	misses        uint64
 	sweepInterval time.Duration
 }
 
-type item struct {
-	value     any
+type item[T any] struct {
+	value     T
 	expiresAt time.Time
 }
 
 // InMemoryOption configures an InMemoryCache.
-type InMemoryOption func(*InMemoryCache)
+type InMemoryOption[T any] func(*InMemoryCache[T])
 
 // WithSweepInterval sets the interval at which expired items are removed.
 // A zero or negative duration disables the background sweeper.
-func WithSweepInterval(d time.Duration) InMemoryOption {
-	return func(c *InMemoryCache) {
+func WithSweepInterval[T any](d time.Duration) InMemoryOption[T] {
+	return func(c *InMemoryCache[T]) {
 		c.sweepInterval = d
 	}
 }
@@ -52,9 +54,9 @@ const defaultSweepInterval = time.Minute
 // An optional sweep interval can be provided using WithSweepInterval. When
 // enabled, a background goroutine periodically removes expired items from the
 // cache. The default interval is one minute.
-func NewInMemory(opts ...InMemoryOption) *InMemoryCache {
-	c := &InMemoryCache{
-		items:         make(map[string]item),
+func NewInMemory[T any](opts ...InMemoryOption[T]) *InMemoryCache[T] {
+	c := &InMemoryCache[T]{
+		items:         make(map[string]item[T]),
 		sweepInterval: defaultSweepInterval,
 	}
 	for _, opt := range opts {
@@ -67,37 +69,39 @@ func NewInMemory(opts ...InMemoryOption) *InMemoryCache {
 }
 
 // Get implements Cache.Get.
-func (c *InMemoryCache) Get(ctx context.Context, key string) (any, bool) {
+func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool) {
 	c.mu.RLock()
 	it, ok := c.items[key]
 	c.mu.RUnlock()
 	if !ok {
 		atomic.AddUint64(&c.misses, 1)
-		return nil, false
+		var zero T
+		return zero, false
 	}
 	if !it.expiresAt.IsZero() && time.Now().After(it.expiresAt) {
 		_ = c.Invalidate(ctx, key)
 		atomic.AddUint64(&c.misses, 1)
-		return nil, false
+		var zero T
+		return zero, false
 	}
 	atomic.AddUint64(&c.hits, 1)
 	return it.value, true
 }
 
 // Set implements Cache.Set.
-func (c *InMemoryCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
+func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
 	var exp time.Time
 	if ttl > 0 {
 		exp = time.Now().Add(ttl)
 	}
 	c.mu.Lock()
-	c.items[key] = item{value: value, expiresAt: exp}
+	c.items[key] = item[T]{value: value, expiresAt: exp}
 	c.mu.Unlock()
 	return nil
 }
 
 // Invalidate implements Cache.Invalidate.
-func (c *InMemoryCache) Invalidate(ctx context.Context, key string) error {
+func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
 	c.mu.Lock()
 	delete(c.items, key)
 	c.mu.Unlock()
@@ -105,7 +109,7 @@ func (c *InMemoryCache) Invalidate(ctx context.Context, key string) error {
 }
 
 // sweeper periodically removes expired items from the cache.
-func (c *InMemoryCache) sweeper() {
+func (c *InMemoryCache[T]) sweeper() {
 	ticker := time.NewTicker(c.sweepInterval)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -128,7 +132,7 @@ type Stats struct {
 }
 
 // Metrics returns current metrics for the cache.
-func (c *InMemoryCache) Metrics() Stats {
+func (c *InMemoryCache[T]) Metrics() Stats {
 	c.mu.RLock()
 	size := len(c.items)
 	c.mu.RUnlock()

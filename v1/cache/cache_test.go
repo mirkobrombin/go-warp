@@ -8,12 +8,12 @@ import (
 
 func TestInMemoryCache(t *testing.T) {
 	ctx := context.Background()
-	c := NewInMemory()
+	c := NewInMemory[string]()
 	if err := c.Set(ctx, "foo", "bar", time.Millisecond); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if v, ok := c.Get(ctx, "foo"); !ok || v.(string) != "bar" {
+	if v, ok := c.Get(ctx, "foo"); !ok || v != "bar" {
 		t.Fatalf("expected bar, got %v", v)
 	}
 
@@ -30,7 +30,7 @@ func TestInMemoryCache(t *testing.T) {
 
 func TestInMemoryCacheSweeper(t *testing.T) {
 	ctx := context.Background()
-	c := NewInMemory(WithSweepInterval(5 * time.Millisecond))
+	c := NewInMemory[string](WithSweepInterval[string](5 * time.Millisecond))
 	if err := c.Set(ctx, "foo", "bar", 5*time.Millisecond); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

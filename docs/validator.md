@@ -11,7 +11,8 @@ The `validator` package runs background scans to compare cache entries with the 
 ## Usage
 
 ```go
-v := validator.New(cacheLayer, store, validator.ModeAutoHeal, time.Minute)
+cacheLayer := cache.NewInMemory[string]()
+v := validator.New[string](cacheLayer, store, validator.ModeAutoHeal, time.Minute)
 go v.Run(ctx)
 ```
 

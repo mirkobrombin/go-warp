@@ -28,22 +28,22 @@ type registration struct {
 }
 
 // Warp orchestrates the interaction between cache, merge engine and sync bus.
-type Warp struct {
-	cache  cache.Cache
+type Warp[T any] struct {
+	cache  cache.Cache[merge.Value[T]]
 	store  adapter.Store
 	bus    syncbus.Bus
-	merges *merge.Engine
+	merges *merge.Engine[T]
 
 	mu   sync.RWMutex
 	regs map[string]registration
 }
 
 // New creates a new Warp instance.
-func New(c cache.Cache, s adapter.Store, bus syncbus.Bus, m *merge.Engine) *Warp {
+func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store, bus syncbus.Bus, m *merge.Engine[T]) *Warp[T] {
 	if m == nil {
-		m = merge.NewEngine()
+		m = merge.NewEngine[T]()
 	}
-	return &Warp{
+	return &Warp[T]{
 		cache:  c,
 		store:  s,
 		bus:    bus,
@@ -53,7 +53,7 @@ func New(c cache.Cache, s adapter.Store, bus syncbus.Bus, m *merge.Engine) *Warp
 }
 
 // Register registers a key with a specific mode and TTL.
-func (w *Warp) Register(key string, mode Mode, ttl time.Duration) {
+func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration) {
 	w.mu.Lock()
 	w.regs[key] = registration{ttl: ttl, mode: mode}
 	w.mu.Unlock()
@@ -63,41 +63,37 @@ func (w *Warp) Register(key string, mode Mode, ttl time.Duration) {
 var ErrNotFound = errors.New("warp: not found")
 
 // Get retrieves a value from the cache.
-func (w *Warp) Get(ctx context.Context, key string) (any, error) {
+func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 	if v, ok := w.cache.Get(ctx, key); ok {
-		if mv, ok := v.(merge.Value); ok {
-			return mv.Data, nil
-		}
-		return v, nil
+		return v.Data, nil
 	}
 	if w.store != nil {
 		w.mu.RLock()
 		reg := w.regs[key]
 		w.mu.RUnlock()
 		if v, err := w.store.Get(ctx, key); err == nil && v != nil {
-			mv := merge.Value{Data: v, Timestamp: time.Now()}
+			mv := merge.Value[T]{Data: v.(T), Timestamp: time.Now()}
 			_ = w.cache.Set(ctx, key, mv, reg.ttl)
-			return v, nil
+			return mv.Data, nil
 		}
 	}
-	return nil, ErrNotFound
+	var zero T
+	return zero, ErrNotFound
 }
 
 // Set stores a value in the cache, applying merge strategies and publishing if needed.
 // It returns an error if persisting the value to the underlying store fails.
-func (w *Warp) Set(ctx context.Context, key string, value any) error {
+func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	w.mu.RLock()
 	reg := w.regs[key]
 	w.mu.RUnlock()
 
 	now := time.Now()
-	newVal := merge.Value{Data: value, Timestamp: now}
+	newVal := merge.Value[T]{Data: value, Timestamp: now}
 	if old, ok := w.cache.Get(ctx, key); ok {
-		if ov, ok := old.(merge.Value); ok {
-			merged, err := w.merges.Merge(key, ov, newVal)
-			if err == nil {
-				newVal = merged
-			}
+		merged, err := w.merges.Merge(key, old, newVal)
+		if err == nil {
+			newVal = merged
 		}
 	}
 
@@ -119,7 +115,7 @@ func (w *Warp) Set(ctx context.Context, key string, value any) error {
 
 // Invalidate removes a key and propagates the invalidation if required.
 // It returns an error if removing the key from the cache fails.
-func (w *Warp) Invalidate(ctx context.Context, key string) error {
+func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 	if err := w.cache.Invalidate(ctx, key); err != nil {
 		return err
 	}
@@ -133,12 +129,12 @@ func (w *Warp) Invalidate(ctx context.Context, key string) error {
 }
 
 // Merge registers a custom merge function for a key.
-func (w *Warp) Merge(key string, fn merge.MergeFn) {
+func (w *Warp[T]) Merge(key string, fn merge.MergeFn[T]) {
 	w.merges.Register(key, fn)
 }
 
 // Warmup loads registered keys from the storage into the cache.
-func (w *Warp) Warmup(ctx context.Context) {
+func (w *Warp[T]) Warmup(ctx context.Context) {
 	if w.store == nil {
 		return
 	}
@@ -156,12 +152,12 @@ func (w *Warp) Warmup(ctx context.Context) {
 		w.mu.RLock()
 		reg := w.regs[k]
 		w.mu.RUnlock()
-		mv := merge.Value{Data: v, Timestamp: time.Now()}
+		mv := merge.Value[T]{Data: v.(T), Timestamp: time.Now()}
 		_ = w.cache.Set(ctx, k, mv, reg.ttl)
 	}
 }
 
 // Validator returns a validator instance bound to this warp.
-func (w *Warp) Validator(mode validator.Mode, interval time.Duration) *validator.Validator {
-	return validator.New(w.cache, w.store, mode, interval)
+func (w *Warp[T]) Validator(mode validator.Mode, interval time.Duration) *validator.Validator[merge.Value[T]] {
+	return validator.New[merge.Value[T]](w.cache, w.store, mode, interval)
 }

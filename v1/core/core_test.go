@@ -13,13 +13,13 @@ import (
 
 func TestWarpSetGet(t *testing.T) {
 	ctx := context.Background()
-	w := New(cache.NewInMemory(), nil, syncbus.NewInMemoryBus(), merge.NewEngine())
+	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, syncbus.NewInMemoryBus(), merge.NewEngine[string]())
 	w.Register("foo", ModeStrongLocal, time.Minute)
 	if err := w.Set(ctx, "foo", "bar"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	v, err := w.Get(ctx, "foo")
-	if err != nil || v.(string) != "bar" {
+	if err != nil || v != "bar" {
 		t.Fatalf("unexpected value: %v, err: %v", v, err)
 	}
 	if err := w.Invalidate(ctx, "foo"); err != nil {
@@ -32,10 +32,10 @@ func TestWarpSetGet(t *testing.T) {
 
 func TestWarpMerge(t *testing.T) {
 	ctx := context.Background()
-	w := New(cache.NewInMemory(), adapter.NewInMemoryStore(), nil, merge.NewEngine())
+	w := New[int](cache.NewInMemory[merge.Value[int]](), adapter.NewInMemoryStore(), nil, merge.NewEngine[int]())
 	w.Register("cnt", ModeStrongLocal, time.Minute)
-	w.Merge("cnt", func(old, new any) (any, error) {
-		return old.(int) + new.(int), nil
+	w.Merge("cnt", func(old, new int) (int, error) {
+		return old + new, nil
 	})
 	if err := w.Set(ctx, "cnt", 1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -47,7 +47,7 @@ func TestWarpMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v.(int) != 3 {
+	if v != 3 {
 		t.Fatalf("expected 3, got %v", v)
 	}
 }
@@ -56,11 +56,11 @@ func TestWarpFallbackAndWarmup(t *testing.T) {
 	ctx := context.Background()
 	store := adapter.NewInMemoryStore()
 	store.Set(ctx, "foo", "bar")
-	w := New(cache.NewInMemory(), store, nil, merge.NewEngine())
+	w := New[string](cache.NewInMemory[merge.Value[string]](), store, nil, merge.NewEngine[string]())
 	w.Register("foo", ModeStrongLocal, time.Minute)
 	// fallback
 	v, err := w.Get(ctx, "foo")
-	if err != nil || v.(string) != "bar" {
+	if err != nil || v != "bar" {
 		t.Fatalf("unexpected fallback value: %v err: %v", v, err)
 	}
 	// warmup
@@ -69,7 +69,7 @@ func TestWarpFallbackAndWarmup(t *testing.T) {
 	}
 	w.Warmup(ctx)
 	v, err = w.Get(ctx, "foo")
-	if err != nil || v.(string) != "bar" {
+	if err != nil || v != "bar" {
 		t.Fatalf("expected warmup to load value, got %v err %v", v, err)
 	}
 }
