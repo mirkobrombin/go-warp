@@ -9,7 +9,9 @@ import (
 func TestInMemoryCache(t *testing.T) {
 	ctx := context.Background()
 	c := NewInMemory()
-	c.Set(ctx, "foo", "bar", time.Millisecond)
+	if err := c.Set(ctx, "foo", "bar", time.Millisecond); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if v, ok := c.Get(ctx, "foo"); !ok || v.(string) != "bar" {
 		t.Fatalf("expected bar, got %v", v)

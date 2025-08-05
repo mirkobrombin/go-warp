@@ -14,7 +14,9 @@ func TestValidatorAutoHeal(t *testing.T) {
 	c := cache.NewInMemory()
 	s := adapter.NewInMemoryStore()
 	s.Set(ctx, "k", "v1")
-	c.Set(ctx, "k", "v0", 0)
+	if err := c.Set(ctx, "k", "v0", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	v := New(c, s, ModeAutoHeal, time.Millisecond)
 	go v.Run(ctx)
 	time.Sleep(5 * time.Millisecond)

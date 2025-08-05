@@ -30,7 +30,7 @@ func main() {
 	ch, _ := bus.Subscribe(ctx, "counter")
 	go func() {
 		for range ch {
-			w2.Invalidate(ctx, "counter")
+			_ = w2.Invalidate(ctx, "counter")
 		}
 	}()
 

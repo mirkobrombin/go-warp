@@ -76,7 +76,7 @@ func (w *Warp) Get(ctx context.Context, key string) (any, error) {
 		w.mu.RUnlock()
 		if v, err := w.store.Get(ctx, key); err == nil && v != nil {
 			mv := merge.Value{Data: v, Timestamp: time.Now()}
-			w.cache.Set(ctx, key, mv, reg.ttl)
+			_ = w.cache.Set(ctx, key, mv, reg.ttl)
 			return v, nil
 		}
 	}
@@ -101,7 +101,9 @@ func (w *Warp) Set(ctx context.Context, key string, value any) error {
 		}
 	}
 
-	w.cache.Set(ctx, key, newVal, reg.ttl)
+	if err := w.cache.Set(ctx, key, newVal, reg.ttl); err != nil {
+		return err
+	}
 	if w.store != nil {
 		if err := w.store.Set(ctx, key, newVal.Data); err != nil {
 			return err
@@ -116,14 +118,18 @@ func (w *Warp) Set(ctx context.Context, key string, value any) error {
 }
 
 // Invalidate removes a key and propagates the invalidation if required.
-func (w *Warp) Invalidate(ctx context.Context, key string) {
-	w.cache.Invalidate(ctx, key)
+// It returns an error if removing the key from the cache fails.
+func (w *Warp) Invalidate(ctx context.Context, key string) error {
+	if err := w.cache.Invalidate(ctx, key); err != nil {
+		return err
+	}
 	w.mu.RLock()
 	reg := w.regs[key]
 	w.mu.RUnlock()
 	if reg.mode != ModeStrongLocal && w.bus != nil {
 		w.bus.Publish(ctx, key)
 	}
+	return nil
 }
 
 // Merge registers a custom merge function for a key.
@@ -151,7 +157,7 @@ func (w *Warp) Warmup(ctx context.Context) {
 		reg := w.regs[k]
 		w.mu.RUnlock()
 		mv := merge.Value{Data: v, Timestamp: time.Now()}
-		w.cache.Set(ctx, k, mv, reg.ttl)
+		_ = w.cache.Set(ctx, k, mv, reg.ttl)
 	}
 }
 

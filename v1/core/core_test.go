@@ -22,7 +22,9 @@ func TestWarpSetGet(t *testing.T) {
 	if err != nil || v.(string) != "bar" {
 		t.Fatalf("unexpected value: %v, err: %v", v, err)
 	}
-	w.Invalidate(ctx, "foo")
+	if err := w.Invalidate(ctx, "foo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if _, err := w.Get(ctx, "foo"); err == nil {
 		t.Fatalf("expected error after invalidate")
 	}
@@ -62,7 +64,9 @@ func TestWarpFallbackAndWarmup(t *testing.T) {
 		t.Fatalf("unexpected fallback value: %v err: %v", v, err)
 	}
 	// warmup
-	w.Invalidate(ctx, "foo")
+	if err := w.Invalidate(ctx, "foo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	w.Warmup(ctx)
 	v, err = w.Get(ctx, "foo")
 	if err != nil || v.(string) != "bar" {

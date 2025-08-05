@@ -69,7 +69,7 @@ func (v *Validator) scan(ctx context.Context) {
 		if digest(cv) != digest(sv) {
 			atomic.AddUint64(&v.mismatches, 1)
 			if v.mode == ModeAutoHeal {
-				v.cache.Set(ctx, k, sv, 0)
+				_ = v.cache.Set(ctx, k, sv, 0)
 			}
 		}
 	}

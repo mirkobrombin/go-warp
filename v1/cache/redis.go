@@ -30,11 +30,11 @@ func (c *RedisCache) Get(ctx context.Context, key string) (any, bool) {
 }
 
 // Set stores the value for the given key for the specified TTL.
-func (c *RedisCache) Set(ctx context.Context, key string, value any, ttl time.Duration) {
-	c.client.Set(ctx, key, value, ttl)
+func (c *RedisCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
+	return c.client.Set(ctx, key, value, ttl).Err()
 }
 
 // Invalidate removes the key from Redis.
-func (c *RedisCache) Invalidate(ctx context.Context, key string) {
-	c.client.Del(ctx, key)
+func (c *RedisCache) Invalidate(ctx context.Context, key string) error {
+	return c.client.Del(ctx, key).Err()
 }

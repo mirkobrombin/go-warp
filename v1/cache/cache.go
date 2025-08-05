@@ -13,9 +13,9 @@ type Cache interface {
 	// indicates whether the key was found.
 	Get(ctx context.Context, key string) (any, bool)
 	// Set stores the value for the given key for the specified TTL.
-	Set(ctx context.Context, key string, value any, ttl time.Duration)
+	Set(ctx context.Context, key string, value any, ttl time.Duration) error
 	// Invalidate removes the key from the cache.
-	Invalidate(ctx context.Context, key string)
+	Invalidate(ctx context.Context, key string) error
 }
 
 // InMemoryCache is a simple in-memory cache implementation with TTL support.
@@ -46,7 +46,7 @@ func (c *InMemoryCache) Get(ctx context.Context, key string) (any, bool) {
 		return nil, false
 	}
 	if !it.expiresAt.IsZero() && time.Now().After(it.expiresAt) {
-		c.Invalidate(ctx, key)
+		_ = c.Invalidate(ctx, key)
 		atomic.AddUint64(&c.misses, 1)
 		return nil, false
 	}
@@ -55,7 +55,7 @@ func (c *InMemoryCache) Get(ctx context.Context, key string) (any, bool) {
 }
 
 // Set implements Cache.Set.
-func (c *InMemoryCache) Set(ctx context.Context, key string, value any, ttl time.Duration) {
+func (c *InMemoryCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	var exp time.Time
 	if ttl > 0 {
 		exp = time.Now().Add(ttl)
@@ -63,13 +63,15 @@ func (c *InMemoryCache) Set(ctx context.Context, key string, value any, ttl time
 	c.mu.Lock()
 	c.items[key] = item{value: value, expiresAt: exp}
 	c.mu.Unlock()
+	return nil
 }
 
 // Invalidate implements Cache.Invalidate.
-func (c *InMemoryCache) Invalidate(ctx context.Context, key string) {
+func (c *InMemoryCache) Invalidate(ctx context.Context, key string) error {
 	c.mu.Lock()
 	delete(c.items, key)
 	c.mu.Unlock()
+	return nil
 }
 
 // Stats reports basic metrics about cache usage.
