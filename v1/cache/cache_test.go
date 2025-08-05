@@ -9,6 +9,7 @@ import (
 func TestInMemoryCache(t *testing.T) {
 	ctx := context.Background()
 	c := NewInMemory[string]()
+	defer c.Close()
 	if err := c.Set(ctx, "foo", "bar", time.Millisecond); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,6 +32,7 @@ func TestInMemoryCache(t *testing.T) {
 func TestInMemoryCacheSweeper(t *testing.T) {
 	ctx := context.Background()
 	c := NewInMemory[string](WithSweepInterval[string](5 * time.Millisecond))
+	defer c.Close()
 	if err := c.Set(ctx, "foo", "bar", 5*time.Millisecond); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

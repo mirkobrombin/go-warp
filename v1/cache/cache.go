@@ -27,6 +27,9 @@ type InMemoryCache[T any] struct {
 	hits          uint64
 	misses        uint64
 	sweepInterval time.Duration
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
 }
 
 type item[T any] struct {
@@ -55,14 +58,18 @@ const defaultSweepInterval = time.Minute
 // enabled, a background goroutine periodically removes expired items from the
 // cache. The default interval is one minute.
 func NewInMemory[T any](opts ...InMemoryOption[T]) *InMemoryCache[T] {
+	ctx, cancel := context.WithCancel(context.Background())
 	c := &InMemoryCache[T]{
 		items:         make(map[string]item[T]),
 		sweepInterval: defaultSweepInterval,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
 	if c.sweepInterval > 0 {
+		c.wg.Add(1)
 		go c.sweeper()
 	}
 	return c
@@ -110,18 +117,30 @@ func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
 
 // sweeper periodically removes expired items from the cache.
 func (c *InMemoryCache[T]) sweeper() {
+	defer c.wg.Done()
 	ticker := time.NewTicker(c.sweepInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		now := time.Now()
-		c.mu.Lock()
-		for k, it := range c.items {
-			if !it.expiresAt.IsZero() && now.After(it.expiresAt) {
-				delete(c.items, k)
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			c.mu.Lock()
+			for k, it := range c.items {
+				if !it.expiresAt.IsZero() && now.After(it.expiresAt) {
+					delete(c.items, k)
+				}
 			}
+			c.mu.Unlock()
+		case <-c.ctx.Done():
+			return
 		}
-		c.mu.Unlock()
 	}
+}
+
+// Close terminates any background goroutines used by the cache.
+func (c *InMemoryCache[T]) Close() {
+	c.cancel()
+	c.wg.Wait()
 }
 
 // Stats reports basic metrics about cache usage.
