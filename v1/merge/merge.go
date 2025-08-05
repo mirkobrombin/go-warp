@@ -1,6 +1,9 @@
 package merge
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Value wraps a value with a timestamp used by merge strategies.
 type Value[T any] struct {
@@ -29,6 +32,7 @@ func (LastWriteWins[T]) Merge(old, new Value[T]) Value[T] {
 
 // Engine manages merge functions for specific keys.
 type Engine[T any] struct {
+	mu              sync.RWMutex
 	custom          map[string]MergeFn[T]
 	defaultStrategy Strategy[T]
 }
@@ -40,12 +44,18 @@ func NewEngine[T any]() *Engine[T] {
 
 // Register associates a custom merge function with a key.
 func (e *Engine[T]) Register(key string, fn MergeFn[T]) {
+	e.mu.Lock()
 	e.custom[key] = fn
+	e.mu.Unlock()
 }
 
 // Merge merges two values based on the registered function or the default strategy.
 func (e *Engine[T]) Merge(key string, old, new Value[T]) (Value[T], error) {
-	if fn, ok := e.custom[key]; ok {
+	e.mu.RLock()
+	fn, ok := e.custom[key]
+	e.mu.RUnlock()
+
+	if ok {
 		v, err := fn(old.Data, new.Data)
 		if err != nil {
 			return Value[T]{}, err
