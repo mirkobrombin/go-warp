@@ -28,6 +28,7 @@ func main() {
 	w2.Register("counter", core.ModeEventualDistributed, time.Minute)
 
 	ch, _ := bus.Subscribe(ctx, "counter")
+	defer bus.Unsubscribe(ctx, "counter", ch)
 	go func() {
 		for range ch {
 			_ = w2.Invalidate(ctx, "counter")

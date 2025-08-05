@@ -10,7 +10,8 @@ import (
 // invalidation events across nodes.
 type Bus interface {
 	Publish(ctx context.Context, key string)
-	Subscribe(ctx context.Context, key string) (<-chan struct{}, error)
+	Subscribe(ctx context.Context, key string) (chan struct{}, error)
+	Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
 }
 
 // InMemoryBus is a local implementation of Bus mainly for testing.
@@ -51,12 +52,36 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) {
 }
 
 // Subscribe implements Bus.Subscribe.
-func (b *InMemoryBus) Subscribe(ctx context.Context, key string) (<-chan struct{}, error) {
+func (b *InMemoryBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
 	ch := make(chan struct{}, 1)
 	b.mu.Lock()
 	b.subs[key] = append(b.subs[key], ch)
 	b.mu.Unlock()
+	go func() {
+		<-ctx.Done()
+		_ = b.Unsubscribe(context.Background(), key, ch)
+	}()
 	return ch, nil
+}
+
+// Unsubscribe implements Bus.Unsubscribe.
+func (b *InMemoryBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error {
+	b.mu.Lock()
+	subs := b.subs[key]
+	for i, c := range subs {
+		if c == ch {
+			subs[i] = subs[len(subs)-1]
+			subs = subs[:len(subs)-1]
+			b.subs[key] = subs
+			close(c)
+			break
+		}
+	}
+	if len(subs) == 0 {
+		delete(b.subs, key)
+	}
+	b.mu.Unlock()
+	return nil
 }
 
 type Metrics struct {

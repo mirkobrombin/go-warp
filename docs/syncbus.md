@@ -7,9 +7,14 @@ The `syncbus` package provides a pluggable mechanism to propagate invalidations 
 ```go
 type Bus interface {
     Publish(ctx context.Context, key string)
-    Subscribe(ctx context.Context, key string) (<-chan struct{}, error)
+    Subscribe(ctx context.Context, key string) (chan struct{}, error)
+    Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
 }
 ```
+
+Subscriptions are automatically cleaned up when the context passed to
+`Subscribe` is done, but can also be explicitly removed via
+`Unsubscribe`.
 
 ## In-Memory Bus
 
@@ -18,6 +23,7 @@ type Bus interface {
 ```go
 bus := syncbus.NewInMemoryBus()
 ch, _ := bus.Subscribe(ctx, "greeting")
+defer bus.Unsubscribe(ctx, "greeting", ch)
 go func() { for range ch { fmt.Println("invalidated") } }()
 bus.Publish(ctx, "greeting")
 metrics := bus.Metrics() // Published, Delivered
