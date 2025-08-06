@@ -41,3 +41,66 @@ graph LR
   refresh stale cache entries automatically.
 
 Refer to the README for a high level description and to the specific documents for detailed usage examples.
+
+## Production Deployment
+
+### Recommended Architecture
+
+A production setup runs Warp on every application node while relying on an external
+message bus and persistent storage shared across the fleet. Keep the bus
+clustered and highly available (Redis Streams, NATS, Kafka, …) and back it with a
+reliable data store such as PostgreSQL or another replicated database. Each Warp
+instance exposes a metrics endpoint and connects to the bus for invalidations and
+to storage for warmup and misses.
+
+### Monitoring
+
+Expose the `/metrics` endpoint and scrape it with Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: warp
+    static_configs:
+      - targets: ['warp-node:8080']
+```
+
+Example alert rules:
+
+```yaml
+groups:
+  - name: warp.rules
+    rules:
+      - alert: WarpCacheMissRateHigh
+        expr: (warp_cache_misses_total / warp_cache_hits_total) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache miss rate high"
+```
+
+Grafana dashboards can visualize these metrics. A minimal panel definition:
+
+```json
+{
+  "panels": [
+    {
+      "title": "Cache Hit Rate",
+      "type": "graph",
+      "targets": [
+        {"expr": "rate(warp_cache_hits_total[5m]) / (rate(warp_cache_hits_total[5m]) + rate(warp_cache_misses_total[5m]))"}
+      ]
+    }
+  ]
+}
+```
+
+Sample Prometheus and Grafana files are provided under `docs/prometheus-scrape.yaml`,
+`docs/prometheus-alerts.yaml`, and `docs/grafana-dashboard.json`.
+
+### Warmup and Error Handling
+
+Schedule periodic warmup cycles to pre‑populate popular keys and call `Warmup`
+on startup. When bus or storage operations fail, log and emit metrics for
+visibility, retry transient errors, and fall back to the storage adapter when
+necessary to keep serving requests.

@@ -1,0 +1,4 @@
+scrape_configs:
+  - job_name: warp
+    static_configs:
+      - targets: ['warp-node:8080']
