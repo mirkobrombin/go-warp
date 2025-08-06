@@ -29,4 +29,30 @@ _ = bus.Publish(ctx, "greeting")
 metrics := bus.Metrics() // Published, Delivered
 ```
 
-Other adapters (e.g. Redis Streams, NATS, Kafka) can be built on top of the same interface.
+## NATS Bus
+
+`NATSBus` uses [NATS](https://nats.io/) subjects (one per key) to propagate events:
+
+```go
+// connect using nats.go
+nc, _ := nats.Connect("nats://localhost:4222")
+bus := syncbus.NewNATSBus(nc)
+ch, _ := bus.Subscribe(ctx, "greeting")
+go func() { for range ch { fmt.Println("invalidated") } }()
+_ = bus.Publish(ctx, "greeting")
+```
+
+## Kafka Bus
+
+`KafkaBus` publishes to Kafka topics named after each key and consumes from partition 0:
+
+```go
+cfg := sarama.NewConfig()
+cfg.Version = sarama.V2_0_0_0
+bus, _ := syncbus.NewKafkaBus([]string{"localhost:9092"}, cfg)
+ch, _ := bus.Subscribe(ctx, "greeting")
+go func() { for range ch { fmt.Println("invalidated") } }()
+_ = bus.Publish(ctx, "greeting")
+```
+
+Other adapters (e.g. Redis Streams) can be built on top of the same interface.
