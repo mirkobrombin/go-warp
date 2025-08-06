@@ -23,3 +23,16 @@ value, ok, _ := store.Get(ctx, "foo")
 ```
 
 Custom adapters can be implemented to connect Warp with databases or other storage systems.
+
+## Redis Store
+
+`RedisStore` persists values using a Redis instance. It uses the Go-Redis client
+for connection pooling and context-aware operations:
+
+```go
+client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+store := adapter.NewRedisStore[string](client)
+```
+
+The store can then be passed to `core.New` so that Warp reads and writes
+through Redis, enabling persistence and warmup.
