@@ -27,3 +27,30 @@ func TestValidatorAutoHeal(t *testing.T) {
 		t.Fatalf("expected mismatch metrics > 0")
 	}
 }
+
+type mockStore struct{ getCalled bool }
+
+func (m *mockStore) Get(ctx context.Context, key string) (string, bool, error) {
+	m.getCalled = true
+	return "", false, nil
+}
+
+func (m *mockStore) Set(ctx context.Context, key string, value string) error {
+	return nil
+}
+
+func (m *mockStore) Keys(ctx context.Context) ([]string, error) {
+	return []string{"k"}, nil
+}
+
+func TestValidatorScanCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := cache.NewInMemory[string]()
+	s := &mockStore{}
+	v := New[string](c, s, ModeNoop, time.Millisecond)
+	v.scan(ctx)
+	if s.getCalled {
+		t.Fatalf("expected early exit on canceled context")
+	}
+}

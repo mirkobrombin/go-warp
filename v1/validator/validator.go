@@ -65,6 +65,11 @@ func (v *Validator[T]) scan(ctx context.Context) {
 		return
 	}
 	for _, k := range keys {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		cv, ok := v.cache.Get(ctx, k)
 		if !ok {
 			continue
