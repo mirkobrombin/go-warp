@@ -70,8 +70,8 @@ func (v *Validator[T]) scan(ctx context.Context) {
 			return
 		default:
 		}
-		cv, ok := v.cache.Get(ctx, k)
-		if !ok {
+		cv, ok, err := v.cache.Get(ctx, k)
+		if err != nil || !ok {
 			continue
 		}
 		sv, ok, err := v.store.Get(ctx, k)

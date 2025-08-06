@@ -12,8 +12,9 @@ import (
 // T represents the type of values stored in the cache.
 type Cache[T any] interface {
 	// Get retrieves a value for the given key. The boolean return
-	// indicates whether the key was found.
-	Get(ctx context.Context, key string) (T, bool)
+	// indicates whether the key was found. An error is returned if
+	// retrieving the value fails.
+	Get(ctx context.Context, key string) (T, bool, error)
 	// Set stores the value for the given key for the specified TTL.
 	Set(ctx context.Context, key string, value T, ttl time.Duration) error
 	// Invalidate removes the key from the cache.
@@ -76,11 +77,11 @@ func NewInMemory[T any](opts ...InMemoryOption[T]) *InMemoryCache[T] {
 }
 
 // Get implements Cache.Get.
-func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool) {
+func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error) {
 	select {
 	case <-ctx.Done():
 		var zero T
-		return zero, false
+		return zero, false, ctx.Err()
 	default:
 	}
 	c.mu.RLock()
@@ -89,22 +90,25 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool) {
 	if !ok {
 		atomic.AddUint64(&c.misses, 1)
 		var zero T
-		return zero, false
+		return zero, false, nil
 	}
 	if !it.expiresAt.IsZero() && time.Now().After(it.expiresAt) {
-		_ = c.Invalidate(ctx, key)
+		if err := c.Invalidate(ctx, key); err != nil {
+			var zero T
+			return zero, false, err
+		}
 		atomic.AddUint64(&c.misses, 1)
 		var zero T
-		return zero, false
+		return zero, false, nil
 	}
 	select {
 	case <-ctx.Done():
 		var zero T
-		return zero, false
+		return zero, false, ctx.Err()
 	default:
 	}
 	atomic.AddUint64(&c.hits, 1)
-	return it.value, true
+	return it.value, true, nil
 }
 
 // Set implements Cache.Set.

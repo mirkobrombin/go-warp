@@ -86,7 +86,10 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		var zero T
 		return zero, ErrUnregistered
 	}
-	if v, ok := w.cache.Get(ctx, key); ok {
+	if v, ok, err := w.cache.Get(ctx, key); err != nil {
+		var zero T
+		return zero, err
+	} else if ok {
 		return v.Data, nil
 	}
 	if w.store != nil {
@@ -117,7 +120,9 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 
 	now := time.Now()
 	newVal := merge.Value[T]{Data: value, Timestamp: now}
-	if old, ok := w.cache.Get(ctx, key); ok {
+	if old, ok, err := w.cache.Get(ctx, key); err != nil {
+		return err
+	} else if ok {
 		merged, err := w.merges.Merge(key, old, newVal)
 		if err == nil {
 			newVal = merged
@@ -196,12 +201,15 @@ type validatorCache[T any] struct {
 	w *Warp[T]
 }
 
-func (vc validatorCache[T]) Get(ctx context.Context, key string) (T, bool) {
-	if v, ok := vc.w.cache.Get(ctx, key); ok {
-		return v.Data, true
+func (vc validatorCache[T]) Get(ctx context.Context, key string) (T, bool, error) {
+	if v, ok, err := vc.w.cache.Get(ctx, key); err != nil {
+		var zero T
+		return zero, false, err
+	} else if ok {
+		return v.Data, true, nil
 	}
 	var zero T
-	return zero, false
+	return zero, false, nil
 }
 
 func (vc validatorCache[T]) Set(ctx context.Context, key string, value T, _ time.Duration) error {

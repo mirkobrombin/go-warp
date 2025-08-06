@@ -36,20 +36,20 @@ func NewRedis[T any](client *redis.Client, codec Codec) *RedisCache[T] {
 }
 
 // Get retrieves the value for the given key.
-func (c *RedisCache[T]) Get(ctx context.Context, key string) (T, bool) {
+func (c *RedisCache[T]) Get(ctx context.Context, key string) (T, bool, error) {
 	var zero T
 	data, err := c.client.Get(ctx, key).Bytes()
 	if err == redis.Nil {
-		return zero, false
+		return zero, false, nil
 	}
 	if err != nil {
-		return zero, false
+		return zero, false, err
 	}
 	var v T
 	if err := c.codec.Unmarshal(data, &v); err != nil {
-		return zero, false
+		return zero, false, err
 	}
-	return v, true
+	return v, true, nil
 }
 
 // Set stores the value for the given key for the specified TTL.

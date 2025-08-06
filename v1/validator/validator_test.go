@@ -20,8 +20,8 @@ func TestValidatorAutoHeal(t *testing.T) {
 	v := New[string](c, s, ModeAutoHeal, time.Millisecond)
 	go v.Run(ctx)
 	time.Sleep(5 * time.Millisecond)
-	if val, ok := c.Get(ctx, "k"); !ok || val != "v1" {
-		t.Fatalf("expected cache healed to v1, got %v", val)
+	if val, ok, err := c.Get(ctx, "k"); err != nil || !ok || val != "v1" {
+		t.Fatalf("expected cache healed to v1, got %v err %v", val, err)
 	}
 	if m := v.Metrics(); m == 0 {
 		t.Fatalf("expected mismatch metrics > 0")

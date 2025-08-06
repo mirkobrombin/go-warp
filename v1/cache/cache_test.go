@@ -15,12 +15,12 @@ func TestInMemoryCache(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if v, ok := c.Get(ctx, "foo"); !ok || v != "bar" {
-		t.Fatalf("expected bar, got %v", v)
+	if v, ok, err := c.Get(ctx, "foo"); err != nil || !ok || v != "bar" {
+		t.Fatalf("expected bar, got %v err %v", v, err)
 	}
 
 	time.Sleep(2 * time.Millisecond)
-	if _, ok := c.Get(ctx, "foo"); ok {
+	if _, ok, err := c.Get(ctx, "foo"); ok || err != nil {
 		t.Fatalf("expected key to expire")
 	}
 
@@ -56,7 +56,7 @@ func TestInMemoryCacheContext(t *testing.T) {
 	if err := c.Set(ctxSet, "a", "b", time.Minute); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
-	if _, ok := c.Get(context.Background(), "a"); ok {
+	if _, ok, err := c.Get(context.Background(), "a"); ok || err != nil {
 		t.Fatalf("item should not be stored when context is canceled")
 	}
 
@@ -68,7 +68,7 @@ func TestInMemoryCacheContext(t *testing.T) {
 	// Get with canceled context should not retrieve the item.
 	ctxGet, cancelGet := context.WithCancel(context.Background())
 	cancelGet()
-	if v, ok := c.Get(ctxGet, "foo"); ok || v != "" {
+	if v, ok, err := c.Get(ctxGet, "foo"); !errors.Is(err, context.Canceled) || ok || v != "" {
 		t.Fatalf("expected canceled context to prevent retrieval")
 	}
 
@@ -78,7 +78,7 @@ func TestInMemoryCacheContext(t *testing.T) {
 	if err := c.Invalidate(ctxInv, "foo"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled error, got %v", err)
 	}
-	if v, ok := c.Get(context.Background(), "foo"); !ok || v != "bar" {
+	if v, ok, err := c.Get(context.Background(), "foo"); err != nil || !ok || v != "bar" {
 		t.Fatalf("item should remain after canceled invalidate")
 	}
 }

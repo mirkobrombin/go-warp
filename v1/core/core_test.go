@@ -46,11 +46,11 @@ func newTTLCache[T any]() *ttlCache[T] {
 	}
 }
 
-func (c *ttlCache[T]) Get(ctx context.Context, key string) (T, bool) {
+func (c *ttlCache[T]) Get(ctx context.Context, key string) (T, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	v, ok := c.items[key]
-	return v, ok
+	return v, ok, nil
 }
 
 func (c *ttlCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
@@ -231,9 +231,9 @@ func TestWarpValidatorAutoHealTTL(t *testing.T) {
 	go v.Run(ctx)
 	time.Sleep(5 * time.Millisecond)
 
-	healed, ok := c.Get(ctx, "k")
-	if !ok || healed.Data != "v1" {
-		t.Fatalf("expected value healed to v1, got %v", healed.Data)
+	healed, ok, err := c.Get(ctx, "k")
+	if err != nil || !ok || healed.Data != "v1" {
+		t.Fatalf("expected value healed to v1, got %v err %v", healed.Data, err)
 	}
 	if newTTL := c.TTL("k"); newTTL != orig {
 		t.Fatalf("expected TTL %v, got %v", orig, newTTL)
