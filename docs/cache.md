@@ -63,3 +63,23 @@ c := cache.NewRedis[string](client, nil) // uses JSON serialization by default
 ```
 
 Both caches implement the same interface and can be swapped depending on deployment needs.
+
+## Metrics
+
+`InMemoryCache` can emit Prometheus metrics for cache hits, misses, evictions and operation latency. Metrics are registered on a
+registry created with `metrics.NewRegistry` and exposed via the standard Prometheus HTTP handler:
+
+```go
+reg := metrics.NewRegistry()
+c := cache.NewInMemory[string](cache.WithMetrics[string](reg))
+http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+```
+
+Prometheus can then scrape the endpoint using a configuration similar to:
+
+```yaml
+scrape_configs:
+  - job_name: "warp"
+    static_configs:
+      - targets: ["localhost:2112"]
+```

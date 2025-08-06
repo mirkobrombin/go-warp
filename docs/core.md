@@ -57,3 +57,24 @@ go validator.Run(ctx)
 ```
 
 See the [overview](overview.md) for the list of modules and the individual documents for more details.
+
+## Metrics
+
+`core` can expose Prometheus metrics for cache hits, misses, evictions and operation latency. Create a registry with
+`metrics.NewRegistry` and enable metrics on both the cache and core:
+
+```go
+reg := metrics.NewRegistry()
+c := cache.NewInMemory[merge.Value[string]](cache.WithMetrics[merge.Value[string]](reg))
+w := core.New[string](c, adapter.NewInMemoryStore[string](), nil, merge.NewEngine[string](), core.WithMetrics[string](reg))
+http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+```
+
+Prometheus scraping example:
+
+```yaml
+scrape_configs:
+  - job_name: "warp"
+    static_configs:
+      - targets: ["localhost:2112"]
+```

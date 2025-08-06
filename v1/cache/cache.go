@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Cache defines the basic operations for a cache layer.
@@ -34,6 +36,11 @@ type InMemoryCache[T any] struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	maxEntries    int
+
+	hitCounter      prometheus.Counter
+	missCounter     prometheus.Counter
+	evictionCounter prometheus.Counter
+	latencyHist     prometheus.Histogram
 }
 
 type item[T any] struct {
@@ -58,6 +65,30 @@ func WithSweepInterval[T any](d time.Duration) InMemoryOption[T] {
 func WithMaxEntries[T any](n int) InMemoryOption[T] {
 	return func(c *InMemoryCache[T]) {
 		c.maxEntries = n
+	}
+}
+
+// WithMetrics enables Prometheus metrics collection using the provided registerer.
+func WithMetrics[T any](reg prometheus.Registerer) InMemoryOption[T] {
+	return func(c *InMemoryCache[T]) {
+		c.hitCounter = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "warp_cache_hits_total",
+			Help: "Total number of cache hits",
+		})
+		c.missCounter = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "warp_cache_misses_total",
+			Help: "Total number of cache misses",
+		})
+		c.evictionCounter = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "warp_cache_evictions_total",
+			Help: "Total number of cache evictions",
+		})
+		c.latencyHist = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "warp_cache_latency_seconds",
+			Help:    "Latency of cache operations",
+			Buckets: prometheus.DefBuckets,
+		})
+		reg.MustRegister(c.hitCounter, c.missCounter, c.evictionCounter, c.latencyHist)
 	}
 }
 
@@ -91,6 +122,12 @@ func NewInMemory[T any](opts ...InMemoryOption[T]) *InMemoryCache[T] {
 
 // Get implements Cache.Get.
 func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error) {
+	start := time.Now()
+	defer func() {
+		if c.latencyHist != nil {
+			c.latencyHist.Observe(time.Since(start).Seconds())
+		}
+	}()
 	select {
 	case <-ctx.Done():
 		var zero T
@@ -102,6 +139,9 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 	if !ok {
 		c.mu.Unlock()
 		atomic.AddUint64(&c.misses, 1)
+		if c.missCounter != nil {
+			c.missCounter.Inc()
+		}
 		var zero T
 		return zero, false, nil
 	}
@@ -111,6 +151,12 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		delete(c.items, key)
 		c.mu.Unlock()
 		atomic.AddUint64(&c.misses, 1)
+		if c.missCounter != nil {
+			c.missCounter.Inc()
+		}
+		if c.evictionCounter != nil {
+			c.evictionCounter.Inc()
+		}
 		var zero T
 		return zero, false, nil
 	}
@@ -124,11 +170,20 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 	default:
 	}
 	atomic.AddUint64(&c.hits, 1)
+	if c.hitCounter != nil {
+		c.hitCounter.Inc()
+	}
 	return it.value, true, nil
 }
 
 // Set implements Cache.Set.
 func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
+	start := time.Now()
+	defer func() {
+		if c.latencyHist != nil {
+			c.latencyHist.Observe(time.Since(start).Seconds())
+		}
+	}()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -159,6 +214,9 @@ func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl tim
 				k := tail.Value.(string)
 				c.order.Remove(tail)
 				delete(c.items, k)
+				if c.evictionCounter != nil {
+					c.evictionCounter.Inc()
+				}
 			}
 		}
 	}
@@ -167,6 +225,12 @@ func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl tim
 
 // Invalidate implements Cache.Invalidate.
 func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
+	start := time.Now()
+	defer func() {
+		if c.latencyHist != nil {
+			c.latencyHist.Observe(time.Since(start).Seconds())
+		}
+	}()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -182,6 +246,9 @@ func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
 	if it, ok := c.items[key]; ok {
 		c.order.Remove(it.element)
 		delete(c.items, key)
+		if c.evictionCounter != nil {
+			c.evictionCounter.Inc()
+		}
 	}
 	return nil
 }
@@ -200,6 +267,9 @@ func (c *InMemoryCache[T]) sweeper() {
 				if !it.expiresAt.IsZero() && now.After(it.expiresAt) {
 					c.order.Remove(it.element)
 					delete(c.items, k)
+					if c.evictionCounter != nil {
+						c.evictionCounter.Inc()
+					}
 				}
 			}
 			c.mu.Unlock()

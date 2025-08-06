@@ -11,6 +11,7 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
 	"github.com/mirkobrombin/go-warp/v1/validator"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Mode represents the consistency mode for a key.
@@ -36,20 +37,56 @@ type Warp[T any] struct {
 
 	mu   sync.RWMutex
 	regs map[string]registration
+
+	hitCounter      prometheus.Counter
+	missCounter     prometheus.Counter
+	evictionCounter prometheus.Counter
+	latencyHist     prometheus.Histogram
+}
+
+// Option configures a Warp instance.
+type Option[T any] func(*Warp[T])
+
+// WithMetrics enables Prometheus metrics collection for core operations.
+func WithMetrics[T any](reg prometheus.Registerer) Option[T] {
+	return func(w *Warp[T]) {
+		w.hitCounter = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "warp_core_hits_total",
+			Help: "Total number of cache hits",
+		})
+		w.missCounter = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "warp_core_misses_total",
+			Help: "Total number of cache misses",
+		})
+		w.evictionCounter = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "warp_core_evictions_total",
+			Help: "Total number of evictions",
+		})
+		w.latencyHist = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "warp_core_latency_seconds",
+			Help:    "Latency of core operations",
+			Buckets: prometheus.DefBuckets,
+		})
+		reg.MustRegister(w.hitCounter, w.missCounter, w.evictionCounter, w.latencyHist)
+	}
 }
 
 // New creates a new Warp instance.
-func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.Bus, m *merge.Engine[T]) *Warp[T] {
+func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.Bus, m *merge.Engine[T], opts ...Option[T]) *Warp[T] {
 	if m == nil {
 		m = merge.NewEngine[T]()
 	}
-	return &Warp[T]{
+	w := &Warp[T]{
 		cache:  c,
 		store:  s,
 		bus:    bus,
 		merges: m,
 		regs:   make(map[string]registration),
 	}
+	for _, opt := range opts {
+		opt(w)
+	}
+	return w
 }
 
 // Register registers a key with a specific mode and TTL.
@@ -79,6 +116,12 @@ var ErrUnregistered = errors.New("warp: key not registered")
 
 // Get retrieves a value from the cache.
 func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
+	start := time.Now()
+	defer func() {
+		if w.latencyHist != nil {
+			w.latencyHist.Observe(time.Since(start).Seconds())
+		}
+	}()
 	w.mu.RLock()
 	reg, ok := w.regs[key]
 	w.mu.RUnlock()
@@ -90,7 +133,14 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		var zero T
 		return zero, err
 	} else if ok {
+		if w.hitCounter != nil {
+			w.hitCounter.Inc()
+		}
 		return v.Data, nil
+	} else {
+		if w.missCounter != nil {
+			w.missCounter.Inc()
+		}
 	}
 	if w.store != nil {
 		v, ok, err := w.store.Get(ctx, key)
@@ -111,6 +161,12 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 // Set stores a value in the cache, applying merge strategies and publishing if needed.
 // It returns an error if persisting the value to the underlying store fails.
 func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
+	start := time.Now()
+	defer func() {
+		if w.latencyHist != nil {
+			w.latencyHist.Observe(time.Since(start).Seconds())
+		}
+	}()
 	w.mu.RLock()
 	reg, ok := w.regs[key]
 	w.mu.RUnlock()
@@ -150,6 +206,12 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 // Invalidate removes a key and propagates the invalidation if required.
 // It returns an error if removing the key from the cache fails.
 func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
+	start := time.Now()
+	defer func() {
+		if w.latencyHist != nil {
+			w.latencyHist.Observe(time.Since(start).Seconds())
+		}
+	}()
 	w.mu.RLock()
 	reg, ok := w.regs[key]
 	w.mu.RUnlock()
@@ -158,6 +220,9 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 	}
 	if err := w.cache.Invalidate(ctx, key); err != nil {
 		return err
+	}
+	if w.evictionCounter != nil {
+		w.evictionCounter.Inc()
 	}
 	if reg.mode != ModeStrongLocal && w.bus != nil {
 		if err := w.bus.Publish(ctx, key); err != nil {
