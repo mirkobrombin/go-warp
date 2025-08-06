@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"container/list"
 	"context"
 	"sync"
 	"sync/atomic"
@@ -25,17 +26,20 @@ type Cache[T any] interface {
 type InMemoryCache[T any] struct {
 	mu            sync.RWMutex
 	items         map[string]item[T]
+	order         *list.List
 	hits          uint64
 	misses        uint64
 	sweepInterval time.Duration
 	ctx           context.Context
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
+	maxEntries    int
 }
 
 type item[T any] struct {
 	value     T
 	expiresAt time.Time
+	element   *list.Element
 }
 
 // InMemoryOption configures an InMemoryCache.
@@ -46,6 +50,14 @@ type InMemoryOption[T any] func(*InMemoryCache[T])
 func WithSweepInterval[T any](d time.Duration) InMemoryOption[T] {
 	return func(c *InMemoryCache[T]) {
 		c.sweepInterval = d
+	}
+}
+
+// WithMaxEntries sets the maximum number of entries the cache can hold.
+// A non-positive value means the cache size is unbounded.
+func WithMaxEntries[T any](n int) InMemoryOption[T] {
+	return func(c *InMemoryCache[T]) {
+		c.maxEntries = n
 	}
 }
 
@@ -62,6 +74,7 @@ func NewInMemory[T any](opts ...InMemoryOption[T]) *InMemoryCache[T] {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &InMemoryCache[T]{
 		items:         make(map[string]item[T]),
+		order:         list.New(),
 		sweepInterval: defaultSweepInterval,
 		ctx:           ctx,
 		cancel:        cancel,
@@ -84,23 +97,26 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		return zero, false, ctx.Err()
 	default:
 	}
-	c.mu.RLock()
+	c.mu.Lock()
 	it, ok := c.items[key]
-	c.mu.RUnlock()
 	if !ok {
+		c.mu.Unlock()
 		atomic.AddUint64(&c.misses, 1)
 		var zero T
 		return zero, false, nil
 	}
 	if !it.expiresAt.IsZero() && time.Now().After(it.expiresAt) {
-		if err := c.Invalidate(ctx, key); err != nil {
-			var zero T
-			return zero, false, err
-		}
+		// remove expired item
+		c.order.Remove(it.element)
+		delete(c.items, key)
+		c.mu.Unlock()
 		atomic.AddUint64(&c.misses, 1)
 		var zero T
 		return zero, false, nil
 	}
+	// mark as recently used
+	c.order.MoveToFront(it.element)
+	c.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		var zero T
@@ -129,7 +145,23 @@ func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl tim
 		return ctx.Err()
 	default:
 	}
-	c.items[key] = item[T]{value: value, expiresAt: exp}
+	if it, ok := c.items[key]; ok {
+		it.value = value
+		it.expiresAt = exp
+		c.items[key] = it
+		c.order.MoveToFront(it.element)
+	} else {
+		elem := c.order.PushFront(key)
+		c.items[key] = item[T]{value: value, expiresAt: exp, element: elem}
+		if c.maxEntries > 0 && len(c.items) > c.maxEntries {
+			tail := c.order.Back()
+			if tail != nil {
+				k := tail.Value.(string)
+				c.order.Remove(tail)
+				delete(c.items, k)
+			}
+		}
+	}
 	return nil
 }
 
@@ -147,7 +179,10 @@ func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
 		return ctx.Err()
 	default:
 	}
-	delete(c.items, key)
+	if it, ok := c.items[key]; ok {
+		c.order.Remove(it.element)
+		delete(c.items, key)
+	}
 	return nil
 }
 
@@ -163,6 +198,7 @@ func (c *InMemoryCache[T]) sweeper() {
 			c.mu.Lock()
 			for k, it := range c.items {
 				if !it.expiresAt.IsZero() && now.After(it.expiresAt) {
+					c.order.Remove(it.element)
 					delete(c.items, k)
 				}
 			}

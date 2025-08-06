@@ -82,3 +82,35 @@ func TestInMemoryCacheContext(t *testing.T) {
 		t.Fatalf("item should remain after canceled invalidate")
 	}
 }
+
+func TestInMemoryCacheEviction(t *testing.T) {
+	ctx := context.Background()
+	c := NewInMemory[string](WithMaxEntries[string](2))
+	defer c.Close()
+
+	if err := c.Set(ctx, "a", "1", time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := c.Set(ctx, "b", "2", time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Access "a" so that "b" becomes the least recently used.
+	if _, ok, err := c.Get(ctx, "a"); err != nil || !ok {
+		t.Fatalf("expected to retrieve a: %v", err)
+	}
+
+	if err := c.Set(ctx, "c", "3", time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok, _ := c.Get(ctx, "b"); ok {
+		t.Fatalf("expected b to be evicted")
+	}
+	if _, ok, _ := c.Get(ctx, "a"); !ok {
+		t.Fatalf("expected a to remain in cache")
+	}
+	if _, ok, _ := c.Get(ctx, "c"); !ok {
+		t.Fatalf("expected c to be present")
+	}
+}

@@ -27,6 +27,16 @@ The sweeper adds a small amount of overhead as it iterates over cached items at
 each interval. For most workloads this is negligible, but very large caches may
 see increased CPU usage during sweeps.
 
+You can also limit the number of items stored by providing `WithMaxEntries`. When
+the cache grows beyond this limit the least recently used item is evicted:
+
+```go
+c := cache.NewInMemory[string](cache.WithMaxEntries[string](100))
+```
+
+Calls to `Get` mark items as recently used, ensuring that frequently accessed
+entries remain in the cache.
+
 ## Redis Cache
 
 `RedisCache` uses [go-redis](https://github.com/redis/go-redis) and maps cache operations to Redis commands:
