@@ -1,6 +1,6 @@
 # Cache Layer
 
-The `cache` package defines the `Cache` interface and provides in-memory and Redis implementations.
+The `cache` package defines the `Cache` interface and provides in-memory, Ristretto and Redis implementations.
 
 ## Interface
 
@@ -36,6 +36,22 @@ c := cache.NewInMemory[string](cache.WithMaxEntries[string](100))
 
 Calls to `Get` mark items as recently used, ensuring that frequently accessed
 entries remain in the cache.
+
+## Ristretto Cache
+
+`RistrettoCache` builds on [dgraph-io/ristretto](https://github.com/dgraph-io/ristretto)
+and offers a high performance in-memory cache:
+
+```go
+c := cache.NewRistretto[string]()
+```
+
+You can supply your own configuration through `WithRistretto`:
+
+```go
+cfg := &ristretto.Config{NumCounters: 1e5, MaxCost: 1 << 20, BufferItems: 64}
+c := cache.NewRistretto[string](cache.WithRistretto(cfg))
+```
 
 ## Redis Cache
 
