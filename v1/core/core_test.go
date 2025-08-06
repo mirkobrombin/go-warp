@@ -75,6 +75,49 @@ func (c *ttlCache[T]) TTL(key string) time.Duration {
 	return c.ttls[key]
 }
 
+type slowStore[T any] struct {
+	data    map[string]T
+	delay   time.Duration
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *slowStore[T]) Get(ctx context.Context, key string) (T, bool, error) {
+	s.once.Do(func() { close(s.started) })
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	select {
+	case <-time.After(s.delay):
+		s.mu.Lock()
+		v, ok := s.data[key]
+		s.mu.Unlock()
+		return v, ok, nil
+	case <-ctx.Done():
+		var zero T
+		return zero, false, ctx.Err()
+	}
+}
+
+func (s *slowStore[T]) Set(ctx context.Context, key string, value T) error {
+	s.mu.Lock()
+	s.data[key] = value
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *slowStore[T]) Keys(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	keys := make([]string, 0, len(s.data))
+	for k := range s.data {
+		keys = append(keys, k)
+	}
+	s.mu.Unlock()
+	return keys, nil
+}
+
 func TestWarpSetGet(t *testing.T) {
 	ctx := context.Background()
 	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, syncbus.NewInMemoryBus(), merge.NewEngine[string]())
@@ -135,6 +178,39 @@ func TestWarpFallbackAndWarmup(t *testing.T) {
 	v, err = w.Get(ctx, "foo")
 	if err != nil || v != "bar" {
 		t.Fatalf("expected warmup to load value, got %v err %v", v, err)
+	}
+}
+
+func TestWarpWarmupContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &slowStore[string]{
+		data:    map[string]string{"a": "1", "b": "2"},
+		delay:   50 * time.Millisecond,
+		started: make(chan struct{}),
+	}
+	w := New[string](cache.NewInMemory[merge.Value[string]](), store, nil, merge.NewEngine[string]())
+	w.Register("a", ModeStrongLocal, time.Minute)
+	w.Register("b", ModeStrongLocal, time.Minute)
+
+	done := make(chan struct{})
+	go func() {
+		w.Warmup(ctx)
+		close(done)
+	}()
+
+	<-store.started
+	cancel()
+	<-done
+
+	store.mu.Lock()
+	calls := store.calls
+	store.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected 1 store call, got %d", calls)
+	}
+
+	if _, ok, _ := w.cache.Get(context.Background(), "b"); ok {
+		t.Fatalf("expected key b not to be warmed up")
 	}
 }
 

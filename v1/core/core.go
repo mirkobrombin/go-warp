@@ -184,6 +184,11 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 	}
 	w.mu.RUnlock()
 	for _, k := range keys {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		v, ok, err := w.store.Get(ctx, k)
 		if err != nil || !ok {
 			continue
