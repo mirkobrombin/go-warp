@@ -100,7 +100,7 @@ func TestWarpDistributedRedis(t *testing.T) {
 
 func TestWarpDistributedNATS(t *testing.T) {
 	ctx := context.Background()
-	s := natsserver.RunDefaultServer()
+	s := natsserver.RunRandClientPortServer()
 	conn, err := nats.Connect(s.ClientURL())
 	if err != nil {
 		t.Fatalf("connect: %v", err)

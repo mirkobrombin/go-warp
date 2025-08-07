@@ -11,7 +11,7 @@ import (
 
 func newNATSBus(t *testing.T) (*NATSBus, context.Context) {
 	t.Helper()
-	s := natsserver.RunDefaultServer()
+	s := natsserver.RunRandClientPortServer()
 	conn, err := nats.Connect(s.ClientURL())
 	if err != nil {
 		t.Fatalf("connect: %v", err)
