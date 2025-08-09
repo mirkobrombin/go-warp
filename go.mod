@@ -6,6 +6,7 @@ require (
 	github.com/IBM/sarama v1.40.0
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/dgraph-io/ristretto v0.1.1
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/hashicorp/go-uuid v1.0.3
 	github.com/nats-io/nats-server/v2 v2.9.6
@@ -31,7 +32,6 @@ require (
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/jcmturner/aescts/v2 v2.0.0 // indirect
