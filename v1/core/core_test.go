@@ -75,6 +75,22 @@ func (c *ttlCache[T]) TTL(key string) time.Duration {
 	return c.ttls[key]
 }
 
+type mockStrategy struct {
+	mu      sync.Mutex
+	ttl     time.Duration
+	records []string
+}
+
+func (m *mockStrategy) Record(key string) {
+	m.mu.Lock()
+	m.records = append(m.records, key)
+	m.mu.Unlock()
+}
+
+func (m *mockStrategy) TTL(key string) time.Duration {
+	return m.ttl
+}
+
 type slowStore[T any] struct {
 	data    map[string]T
 	delay   time.Duration
@@ -313,5 +329,28 @@ func TestWarpValidatorAutoHealTTL(t *testing.T) {
 	}
 	if newTTL := c.TTL("k"); newTTL != orig {
 		t.Fatalf("expected TTL %v, got %v", orig, newTTL)
+	}
+}
+func TestWarpRegisterDynamicTTL(t *testing.T) {
+	ctx := context.Background()
+	c := newTTLCache[merge.Value[string]]()
+	strat := &mockStrategy{ttl: 2 * time.Second}
+	w := New[string](c, nil, nil, merge.NewEngine[string]())
+	if !w.RegisterDynamicTTL("foo", ModeStrongLocal, strat) {
+		t.Fatalf("expected registration success")
+	}
+	if err := w.Set(ctx, "foo", "bar"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ttl := c.TTL("foo"); ttl != 2*time.Second {
+		t.Fatalf("expected ttl 2s, got %v", ttl)
+	}
+	if _, err := w.Get(ctx, "foo"); err != nil {
+		t.Fatalf("unexpected get error: %v", err)
+	}
+	strat.mu.Lock()
+	defer strat.mu.Unlock()
+	if len(strat.records) != 2 {
+		t.Fatalf("expected 2 record calls, got %d", len(strat.records))
 	}
 }

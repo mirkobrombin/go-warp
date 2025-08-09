@@ -24,8 +24,9 @@ const (
 )
 
 type registration struct {
-	ttl  time.Duration
-	mode Mode
+	ttl         time.Duration
+	ttlStrategy cache.TTLStrategy
+	mode        Mode
 }
 
 // Warp orchestrates the interaction between cache, merge engine and sync bus.
@@ -101,6 +102,18 @@ func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration) bool {
 	return true
 }
 
+// RegisterDynamicTTL registers a key with a consistency mode and a dynamic TTL
+// strategy. It returns false if the key was already registered.
+func (w *Warp[T]) RegisterDynamicTTL(key string, mode Mode, strat cache.TTLStrategy) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, exists := w.regs[key]; exists {
+		return false
+	}
+	w.regs[key] = registration{ttlStrategy: strat, mode: mode}
+	return true
+}
+
 // Unregister removes a key registration.
 func (w *Warp[T]) Unregister(key string) {
 	w.mu.Lock()
@@ -129,6 +142,9 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		var zero T
 		return zero, ErrUnregistered
 	}
+	if reg.ttlStrategy != nil {
+		reg.ttlStrategy.Record(key)
+	}
 	if v, ok, err := w.cache.Get(ctx, key); err != nil {
 		var zero T
 		return zero, err
@@ -150,7 +166,11 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		}
 		if ok {
 			mv := merge.Value[T]{Data: v, Timestamp: time.Now()}
-			_ = w.cache.Set(ctx, key, mv, reg.ttl)
+			ttl := reg.ttl
+			if reg.ttlStrategy != nil {
+				ttl = reg.ttlStrategy.TTL(key)
+			}
+			_ = w.cache.Set(ctx, key, mv, ttl)
 			return mv.Data, nil
 		}
 	}
@@ -173,6 +193,9 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	if !ok {
 		return ErrUnregistered
 	}
+	if reg.ttlStrategy != nil {
+		reg.ttlStrategy.Record(key)
+	}
 
 	now := time.Now()
 	newVal := merge.Value[T]{Data: value, Timestamp: now}
@@ -185,7 +208,11 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 		}
 	}
 
-	if err := w.cache.Set(ctx, key, newVal, reg.ttl); err != nil {
+	ttl := reg.ttl
+	if reg.ttlStrategy != nil {
+		ttl = reg.ttlStrategy.TTL(key)
+	}
+	if err := w.cache.Set(ctx, key, newVal, ttl); err != nil {
 		return err
 	}
 	if w.store != nil {
@@ -262,7 +289,11 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 		reg := w.regs[k]
 		w.mu.RUnlock()
 		mv := merge.Value[T]{Data: v, Timestamp: time.Now()}
-		_ = w.cache.Set(ctx, k, mv, reg.ttl)
+		ttl := reg.ttl
+		if reg.ttlStrategy != nil {
+			ttl = reg.ttlStrategy.TTL(k)
+		}
+		_ = w.cache.Set(ctx, k, mv, ttl)
 	}
 }
 
@@ -290,6 +321,10 @@ func (vc validatorCache[T]) Set(ctx context.Context, key string, value T, _ time
 	var ttl time.Duration
 	if ok {
 		ttl = reg.ttl
+		if reg.ttlStrategy != nil {
+			reg.ttlStrategy.Record(key)
+			ttl = reg.ttlStrategy.TTL(key)
+		}
 	}
 	return vc.w.cache.Set(ctx, key, mv, ttl)
 }
