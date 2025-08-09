@@ -143,3 +143,117 @@ func TestUnsubscribeContextCanceled(t *testing.T) {
 		t.Fatalf("cleanup unsubscribe: %v", err)
 	}
 }
+
+func TestLeaseRevokeFlowAndMetrics(t *testing.T) {
+	bus := NewInMemoryBus()
+	ctx := context.Background()
+	ch, err := bus.SubscribeLease(ctx, "id")
+	if err != nil {
+		t.Fatalf("subscribe lease: %v", err)
+	}
+
+	if err := bus.RevokeLease(context.Background(), "id"); err != nil {
+		t.Fatalf("revoke lease: %v", err)
+	}
+
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for revoke lease")
+	}
+
+	metrics := bus.Metrics()
+	if metrics.Published != 1 {
+		t.Fatalf("expected published 1 got %d", metrics.Published)
+	}
+	if metrics.Delivered != 1 {
+		t.Fatalf("expected delivered 1 got %d", metrics.Delivered)
+	}
+}
+
+func TestSubscribeLeaseContextCanceled(t *testing.T) {
+	bus := NewInMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := bus.SubscribeLease(ctx, "id"); err == nil {
+		t.Fatal("expected subscribe lease error due to canceled context")
+	}
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	if _, ok := bus.subs["lease:id"]; ok {
+		t.Fatal("subscription should not be added when context is canceled")
+	}
+}
+
+func TestUnsubscribeLeaseClosesChannel(t *testing.T) {
+	bus := NewInMemoryBus()
+	ch, err := bus.SubscribeLease(context.Background(), "id")
+	if err != nil {
+		t.Fatalf("subscribe lease: %v", err)
+	}
+	if err := bus.UnsubscribeLease(context.Background(), "id", ch); err != nil {
+		t.Fatalf("unsubscribe lease: %v", err)
+	}
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected channel closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for unsubscribe lease")
+	}
+
+	bus.mu.Lock()
+	if _, ok := bus.subs["lease:id"]; ok {
+		bus.mu.Unlock()
+		t.Fatal("subscription still present after unsubscribe lease")
+	}
+	bus.mu.Unlock()
+
+	metrics := bus.Metrics()
+	if metrics.Published != 0 {
+		t.Fatalf("expected published 0 got %d", metrics.Published)
+	}
+	if metrics.Delivered != 0 {
+		t.Fatalf("expected delivered 0 got %d", metrics.Delivered)
+	}
+}
+
+func TestRevokeLeaseContextCanceled(t *testing.T) {
+	bus := NewInMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := bus.RevokeLease(ctx, "id"); err == nil {
+		t.Fatal("expected revoke lease error due to canceled context")
+	}
+	metrics := bus.Metrics()
+	if metrics.Published != 0 {
+		t.Fatalf("expected published 0 got %d", metrics.Published)
+	}
+	if metrics.Delivered != 0 {
+		t.Fatalf("expected delivered 0 got %d", metrics.Delivered)
+	}
+}
+
+func TestUnsubscribeLeaseContextCanceled(t *testing.T) {
+	bus := NewInMemoryBus()
+	ch, err := bus.SubscribeLease(context.Background(), "id")
+	if err != nil {
+		t.Fatalf("subscribe lease: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := bus.UnsubscribeLease(ctx, "id", ch); err == nil {
+		t.Fatal("expected unsubscribe lease error due to canceled context")
+	}
+	bus.mu.Lock()
+	if _, ok := bus.subs["lease:id"]; !ok {
+		bus.mu.Unlock()
+		t.Fatal("subscription should remain when unsubscribe lease context is canceled")
+	}
+	bus.mu.Unlock()
+	if err := bus.UnsubscribeLease(context.Background(), "id", ch); err != nil {
+		t.Fatalf("cleanup unsubscribe lease: %v", err)
+	}
+}
