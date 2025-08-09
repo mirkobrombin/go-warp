@@ -82,3 +82,29 @@ func TestInMemoryWatchBusPrefix(t *testing.T) {
 	_ = bus.Unwatch(ctx, "foo1", chKey)
 	_ = bus.Unwatch(ctx, "foo", chPrefix)
 }
+
+func TestInMemoryWatchBusContextCanceled(t *testing.T) {
+	bus := NewInMemory()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := bus.Watch(ctx, "k"); err == nil {
+		t.Fatal("expected watch error on canceled context")
+	}
+	if err := bus.Publish(ctx, "k", nil); err == nil {
+		t.Fatal("expected publish error on canceled context")
+	}
+	ch := make(chan []byte)
+	if err := bus.Unwatch(ctx, "k", ch); err == nil {
+		t.Fatal("expected unwatch error on canceled context")
+	}
+}
+
+func TestInMemoryWatchBusUnwatchUnknown(t *testing.T) {
+	bus := NewInMemory()
+	ctx := context.Background()
+	ch := make(chan []byte)
+	// Should not panic or error when channel not registered
+	if err := bus.Unwatch(ctx, "missing", ch); err != nil {
+		t.Fatalf("unwatch unexpected error: %v", err)
+	}
+}

@@ -54,3 +54,20 @@ func TestValidatorScanCanceledContext(t *testing.T) {
 		t.Fatalf("expected early exit on canceled context")
 	}
 }
+
+func TestValidatorAlertMode(t *testing.T) {
+	ctx := context.Background()
+	c := cache.NewInMemory[string]()
+	s := adapter.NewInMemoryStore[string]()
+	_ = s.Set(ctx, "k", "v1")
+	_ = c.Set(ctx, "k", "v0", 0)
+	v := New[string](c, s, ModeAlert, time.Millisecond)
+	go v.Run(ctx)
+	time.Sleep(5 * time.Millisecond)
+	if val, _, _ := c.Get(ctx, "k"); val != "v0" {
+		t.Fatalf("cache should not heal in alert mode")
+	}
+	if m := v.Metrics(); m == 0 {
+		t.Fatalf("expected mismatch metrics")
+	}
+}

@@ -400,3 +400,17 @@ func TestWarpRegisterDynamicTTL(t *testing.T) {
 		t.Fatalf("expected 2 record calls, got %d", len(strat.records))
 	}
 }
+
+func TestWarpTxnCASMismatch(t *testing.T) {
+	ctx := context.Background()
+	w := New[string](cache.NewInMemory[merge.Value[string]](), adapter.NewInMemoryStore[string](), nil, merge.NewEngine[string]())
+	w.Register("foo", ModeStrongLocal, time.Minute)
+	if err := w.Set(ctx, "foo", "a"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	txn := w.Txn(ctx)
+	txn.CompareAndSwap("foo", "b", "c")
+	if err := txn.Commit(); !errors.Is(err, ErrCASMismatch) {
+		t.Fatalf("expected ErrCASMismatch got %v", err)
+	}
+}
