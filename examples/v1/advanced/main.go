@@ -10,6 +10,7 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/core"
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
+	"github.com/mirkobrombin/go-warp/v1/watchbus"
 )
 
 func main() {
@@ -46,4 +47,19 @@ func main() {
 	v1, _ := w1.Get(ctx, "counter")
 	v2, _ := w2.Get(ctx, "counter")
 	fmt.Println("node1:", v1, "node2:", v2)
+
+	// WatchBus prefix example
+	wb := watchbus.NewInMemory()
+	pch, err := core.WatchPrefix(ctx, wb, "task:")
+	if err != nil {
+		panic(err)
+	}
+	go func() {
+		for msg := range pch {
+			fmt.Printf("task event: %s\n", msg)
+		}
+	}()
+	_ = wb.Publish(ctx, "task:1", []byte("done"))
+	_ = wb.PublishPrefix(ctx, "task:", []byte("all done"))
+	time.Sleep(100 * time.Millisecond)
 }
