@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"time"
 
@@ -43,6 +44,15 @@ type Warp[T any] struct {
 	missCounter     prometheus.Counter
 	evictionCounter prometheus.Counter
 	latencyHist     prometheus.Histogram
+}
+
+// Txn represents a batch of operations to be applied atomically.
+type Txn[T any] struct {
+	w       *Warp[T]
+	ctx     context.Context
+	sets    map[string]T
+	deletes map[string]struct{}
+	cas     map[string]T
 }
 
 // versionedCache extends Cache with the ability to retrieve values at a specific time.
@@ -132,6 +142,9 @@ var ErrNotFound = errors.New("warp: not found")
 
 // ErrUnregistered is returned when a key is not registered.
 var ErrUnregistered = errors.New("warp: key not registered")
+
+// ErrCASMismatch is returned when the expected value differs from the current one.
+var ErrCASMismatch = errors.New("warp: cas mismatch")
 
 // Get retrieves a value from the cache.
 func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
@@ -340,6 +353,146 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 		}
 		_ = w.cache.Set(ctx, k, mv, ttl)
 	}
+}
+
+// Txn creates a new transaction associated with this Warp.
+func (w *Warp[T]) Txn(ctx context.Context) *Txn[T] {
+	return &Txn[T]{
+		w:       w,
+		ctx:     ctx,
+		sets:    make(map[string]T),
+		deletes: make(map[string]struct{}),
+		cas:     make(map[string]T),
+	}
+}
+
+// Set queues a key to be updated with the provided value.
+func (t *Txn[T]) Set(key string, value T) {
+	t.sets[key] = value
+	delete(t.deletes, key)
+	delete(t.cas, key)
+}
+
+// Delete queues a key for deletion.
+func (t *Txn[T]) Delete(key string) {
+	t.deletes[key] = struct{}{}
+	delete(t.sets, key)
+	delete(t.cas, key)
+}
+
+// CompareAndSwap queues a CAS operation for a key.
+func (t *Txn[T]) CompareAndSwap(key string, old, new T) {
+	t.sets[key] = new
+	t.cas[key] = old
+	delete(t.deletes, key)
+}
+
+// Commit applies all queued operations atomically.
+func (t *Txn[T]) Commit() error {
+	start := time.Now()
+	defer func() {
+		if t.w.latencyHist != nil {
+			t.w.latencyHist.Observe(time.Since(start).Seconds())
+		}
+	}()
+
+	var batch adapter.Batch[T]
+	if t.w.store != nil {
+		if b, ok := t.w.store.(adapter.Batcher[T]); ok {
+			var err error
+			batch, err = b.Batch(t.ctx)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	for key, val := range t.sets {
+		t.w.mu.RLock()
+		reg, ok := t.w.regs[key]
+		t.w.mu.RUnlock()
+		if !ok {
+			return ErrUnregistered
+		}
+		if reg.ttlStrategy != nil {
+			reg.ttlStrategy.Record(key)
+		}
+
+		now := time.Now()
+		newVal := merge.Value[T]{Data: val, Timestamp: now}
+
+		if old, ok, err := t.w.cache.Get(t.ctx, key); err != nil {
+			return err
+		} else if ok {
+			if expected, has := t.cas[key]; has {
+				if !reflect.DeepEqual(old.Data, expected) {
+					return ErrCASMismatch
+				}
+			}
+			if merged, err := t.w.merges.Merge(key, old, newVal); err == nil {
+				newVal = merged
+			}
+		} else if _, has := t.cas[key]; has {
+			return ErrCASMismatch
+		}
+
+		ttl := reg.ttl
+		if reg.ttlStrategy != nil {
+			ttl = reg.ttlStrategy.TTL(key)
+		}
+		if err := t.w.cache.Set(t.ctx, key, newVal, ttl); err != nil {
+			return err
+		}
+
+		if batch != nil {
+			if err := batch.Set(t.ctx, key, newVal.Data); err != nil {
+				return err
+			}
+		} else if t.w.store != nil {
+			if err := t.w.store.Set(t.ctx, key, newVal.Data); err != nil {
+				return err
+			}
+		}
+
+		if reg.mode != ModeStrongLocal && t.w.bus != nil {
+			if err := t.w.bus.Publish(t.ctx, key); err != nil {
+				return err
+			}
+		}
+	}
+
+	for key := range t.deletes {
+		t.w.mu.RLock()
+		reg, ok := t.w.regs[key]
+		t.w.mu.RUnlock()
+		if !ok {
+			return ErrUnregistered
+		}
+		if err := t.w.cache.Invalidate(t.ctx, key); err != nil {
+			return err
+		}
+		if t.w.evictionCounter != nil {
+			t.w.evictionCounter.Inc()
+		}
+		if batch != nil {
+			if err := batch.Delete(t.ctx, key); err != nil {
+				return err
+			}
+		}
+
+		if reg.mode != ModeStrongLocal && t.w.bus != nil {
+			if err := t.w.bus.Publish(t.ctx, key); err != nil {
+				return err
+			}
+		}
+	}
+
+	if batch != nil {
+		if err := batch.Commit(t.ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validatorCache adapts the Warp cache to the Validator interface by operating on raw values.

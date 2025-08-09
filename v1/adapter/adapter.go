@@ -19,6 +19,19 @@ type Store[T any] interface {
 	Keys(ctx context.Context) ([]string, error)
 }
 
+// Batch allows grouping multiple operations before committing them to the
+// underlying storage.
+type Batch[T any] interface {
+	Set(ctx context.Context, key string, value T) error
+	Delete(ctx context.Context, key string) error
+	Commit(ctx context.Context) error
+}
+
+// Batcher is implemented by stores that support batch operations.
+type Batcher[T any] interface {
+	Batch(ctx context.Context) (Batch[T], error)
+}
+
 // InMemoryStore is a simple Store implementation backed by a map.
 type InMemoryStore[T any] struct {
 	mu    sync.RWMutex
@@ -59,4 +72,37 @@ func (s *InMemoryStore[T]) Keys(ctx context.Context) ([]string, error) {
 	}
 	s.mu.RUnlock()
 	return keys, nil
+}
+
+// Batch implements Batcher.Batch.
+func (s *InMemoryStore[T]) Batch(ctx context.Context) (Batch[T], error) {
+	return &inMemoryBatch[T]{s: s, sets: make(map[string]T)}, nil
+}
+
+type inMemoryBatch[T any] struct {
+	s       *InMemoryStore[T]
+	sets    map[string]T
+	deletes []string
+}
+
+func (b *inMemoryBatch[T]) Set(ctx context.Context, key string, value T) error {
+	b.sets[key] = value
+	return nil
+}
+
+func (b *inMemoryBatch[T]) Delete(ctx context.Context, key string) error {
+	b.deletes = append(b.deletes, key)
+	return nil
+}
+
+func (b *inMemoryBatch[T]) Commit(ctx context.Context) error {
+	b.s.mu.Lock()
+	defer b.s.mu.Unlock()
+	for _, k := range b.deletes {
+		delete(b.s.items, k)
+	}
+	for k, v := range b.sets {
+		b.s.items[k] = v
+	}
+	return nil
 }

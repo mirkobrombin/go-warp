@@ -60,3 +60,40 @@ func (s *RedisStore[T]) Keys(ctx context.Context) ([]string, error) {
 	}
 	return keys, nil
 }
+
+// Batch implements Batcher.Batch using a Redis pipeline.
+func (s *RedisStore[T]) Batch(ctx context.Context) (Batch[T], error) {
+	return &redisBatch[T]{s: s, sets: make(map[string]T)}, nil
+}
+
+type redisBatch[T any] struct {
+	s       *RedisStore[T]
+	sets    map[string]T
+	deletes []string
+}
+
+func (b *redisBatch[T]) Set(ctx context.Context, key string, value T) error {
+	b.sets[key] = value
+	return nil
+}
+
+func (b *redisBatch[T]) Delete(ctx context.Context, key string) error {
+	b.deletes = append(b.deletes, key)
+	return nil
+}
+
+func (b *redisBatch[T]) Commit(ctx context.Context) error {
+	pipe := b.s.client.TxPipeline()
+	for k, v := range b.sets {
+		data, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		pipe.Set(ctx, k, data, 0)
+	}
+	if len(b.deletes) > 0 {
+		pipe.Del(ctx, b.deletes...)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
