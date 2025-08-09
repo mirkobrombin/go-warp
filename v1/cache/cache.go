@@ -8,7 +8,11 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
+
+var tracer = otel.Tracer("github.com/mirkobrombin/go-warp/v1/cache")
 
 // Cache defines the basic operations for a cache layer.
 //
@@ -122,8 +126,11 @@ func NewInMemory[T any](opts ...InMemoryOption[T]) *InMemoryCache[T] {
 
 // Get implements Cache.Get.
 func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error) {
+	ctx, span := tracer.Start(ctx, "Cache.Get")
 	start := time.Now()
 	defer func() {
+		span.SetAttributes(attribute.Int64("warp.cache.latency_ms", time.Since(start).Milliseconds()))
+		span.End()
 		if c.latencyHist != nil {
 			c.latencyHist.Observe(time.Since(start).Seconds())
 		}
@@ -142,6 +149,7 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		if c.missCounter != nil {
 			c.missCounter.Inc()
 		}
+		span.SetAttributes(attribute.String("warp.cache.result", "miss"))
 		var zero T
 		return zero, false, nil
 	}
@@ -157,6 +165,7 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		if c.evictionCounter != nil {
 			c.evictionCounter.Inc()
 		}
+		span.SetAttributes(attribute.String("warp.cache.result", "miss"))
 		var zero T
 		return zero, false, nil
 	}
@@ -173,13 +182,17 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 	if c.hitCounter != nil {
 		c.hitCounter.Inc()
 	}
+	span.SetAttributes(attribute.String("warp.cache.result", "hit"))
 	return it.value, true, nil
 }
 
 // Set implements Cache.Set.
 func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
+	ctx, span := tracer.Start(ctx, "Cache.Set")
 	start := time.Now()
 	defer func() {
+		span.SetAttributes(attribute.Int64("warp.cache.latency_ms", time.Since(start).Milliseconds()))
+		span.End()
 		if c.latencyHist != nil {
 			c.latencyHist.Observe(time.Since(start).Seconds())
 		}
@@ -225,8 +238,11 @@ func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl tim
 
 // Invalidate implements Cache.Invalidate.
 func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
+	ctx, span := tracer.Start(ctx, "Cache.Invalidate")
 	start := time.Now()
 	defer func() {
+		span.SetAttributes(attribute.Int64("warp.cache.latency_ms", time.Since(start).Milliseconds()))
+		span.End()
 		if c.latencyHist != nil {
 			c.latencyHist.Observe(time.Since(start).Seconds())
 		}

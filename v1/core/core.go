@@ -10,10 +10,15 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/adapter"
 	"github.com/mirkobrombin/go-warp/v1/cache"
 	"github.com/mirkobrombin/go-warp/v1/merge"
+	"github.com/mirkobrombin/go-warp/v1/metrics"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
 	"github.com/mirkobrombin/go-warp/v1/validator"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
+
+var tracer = otel.Tracer("github.com/mirkobrombin/go-warp/v1/core")
 
 // Mode represents the consistency mode for a key.
 type Mode int
@@ -150,8 +155,12 @@ var ErrCASMismatch = errors.New("warp: cas mismatch")
 
 // Get retrieves a value from the cache.
 func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
+	metrics.GetCounter.Inc()
+	ctx, span := tracer.Start(ctx, "Warp.Get")
 	start := time.Now()
 	defer func() {
+		span.SetAttributes(attribute.Int64("warp.core.latency_ms", time.Since(start).Milliseconds()))
+		span.End()
 		if w.latencyHist != nil {
 			w.latencyHist.Observe(time.Since(start).Seconds())
 		}
@@ -173,11 +182,13 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		if w.hitCounter != nil {
 			w.hitCounter.Inc()
 		}
+		span.SetAttributes(attribute.String("warp.core.result", "hit"))
 		return v.Data, nil
 	} else {
 		if w.missCounter != nil {
 			w.missCounter.Inc()
 		}
+		span.SetAttributes(attribute.String("warp.core.result", "miss"))
 	}
 	if w.store != nil {
 		v, ok, err := w.store.Get(ctx, key)
@@ -201,8 +212,12 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 
 // GetAt retrieves the value for a key at the specified time, if available.
 func (w *Warp[T]) GetAt(ctx context.Context, key string, at time.Time) (T, error) {
+	metrics.GetCounter.Inc()
+	ctx, span := tracer.Start(ctx, "Warp.GetAt")
 	start := time.Now()
 	defer func() {
+		span.SetAttributes(attribute.Int64("warp.core.latency_ms", time.Since(start).Milliseconds()))
+		span.End()
 		if w.latencyHist != nil {
 			w.latencyHist.Observe(time.Since(start).Seconds())
 		}
@@ -229,11 +244,13 @@ func (w *Warp[T]) GetAt(ctx context.Context, key string, at time.Time) (T, error
 		if w.hitCounter != nil {
 			w.hitCounter.Inc()
 		}
+		span.SetAttributes(attribute.String("warp.core.result", "hit"))
 		return v.Data, nil
 	}
 	if w.missCounter != nil {
 		w.missCounter.Inc()
 	}
+	span.SetAttributes(attribute.String("warp.core.result", "miss"))
 	var zero T
 	return zero, ErrNotFound
 }
@@ -241,8 +258,12 @@ func (w *Warp[T]) GetAt(ctx context.Context, key string, at time.Time) (T, error
 // Set stores a value in the cache, applying merge strategies and publishing if needed.
 // It returns an error if persisting the value to the underlying store fails.
 func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
+	metrics.SetCounter.Inc()
+	ctx, span := tracer.Start(ctx, "Warp.Set")
 	start := time.Now()
 	defer func() {
+		span.SetAttributes(attribute.Int64("warp.core.latency_ms", time.Since(start).Milliseconds()))
+		span.End()
 		if w.latencyHist != nil {
 			w.latencyHist.Observe(time.Since(start).Seconds())
 		}
@@ -293,8 +314,12 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 // Invalidate removes a key and propagates the invalidation if required.
 // It returns an error if removing the key from the cache fails.
 func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
+	metrics.InvalidateCounter.Inc()
+	ctx, span := tracer.Start(ctx, "Warp.Invalidate")
 	start := time.Now()
 	defer func() {
+		span.SetAttributes(attribute.Int64("warp.core.latency_ms", time.Since(start).Milliseconds()))
+		span.End()
 		if w.latencyHist != nil {
 			w.latencyHist.Observe(time.Since(start).Seconds())
 		}
@@ -406,8 +431,11 @@ func (t *Txn[T]) CompareAndSwap(key string, old, new T) {
 
 // Commit applies all queued operations atomically.
 func (t *Txn[T]) Commit() error {
+	ctx, span := tracer.Start(t.ctx, "Warp.Txn.Commit")
 	start := time.Now()
 	defer func() {
+		span.SetAttributes(attribute.Int64("warp.core.latency_ms", time.Since(start).Milliseconds()))
+		span.End()
 		if t.w.latencyHist != nil {
 			t.w.latencyHist.Observe(time.Since(start).Seconds())
 		}
@@ -417,7 +445,7 @@ func (t *Txn[T]) Commit() error {
 	if t.w.store != nil {
 		if b, ok := t.w.store.(adapter.Batcher[T]); ok {
 			var err error
-			batch, err = b.Batch(t.ctx)
+			batch, err = b.Batch(ctx)
 			if err != nil {
 				return err
 			}
@@ -438,7 +466,8 @@ func (t *Txn[T]) Commit() error {
 		now := time.Now()
 		newVal := merge.Value[T]{Data: val, Timestamp: now}
 
-		if old, ok, err := t.w.cache.Get(t.ctx, key); err != nil {
+		metrics.SetCounter.Inc()
+		if old, ok, err := t.w.cache.Get(ctx, key); err != nil {
 			return err
 		} else if ok {
 			if expected, has := t.cas[key]; has {
@@ -457,55 +486,56 @@ func (t *Txn[T]) Commit() error {
 		if reg.ttlStrategy != nil {
 			ttl = reg.ttlStrategy.TTL(key)
 		}
-		if err := t.w.cache.Set(t.ctx, key, newVal, ttl); err != nil {
+		if err := t.w.cache.Set(ctx, key, newVal, ttl); err != nil {
 			return err
 		}
 
 		if batch != nil {
-			if err := batch.Set(t.ctx, key, newVal.Data); err != nil {
+			if err := batch.Set(ctx, key, newVal.Data); err != nil {
 				return err
 			}
 		} else if t.w.store != nil {
-			if err := t.w.store.Set(t.ctx, key, newVal.Data); err != nil {
+			if err := t.w.store.Set(ctx, key, newVal.Data); err != nil {
 				return err
 			}
 		}
 
 		if reg.mode != ModeStrongLocal && t.w.bus != nil {
-			if err := t.w.bus.Publish(t.ctx, key); err != nil {
+			if err := t.w.bus.Publish(ctx, key); err != nil {
 				return err
 			}
 		}
 	}
 
 	for key := range t.deletes {
+		metrics.InvalidateCounter.Inc()
 		t.w.mu.RLock()
 		reg, ok := t.w.regs[key]
 		t.w.mu.RUnlock()
 		if !ok {
 			return ErrUnregistered
 		}
-		if err := t.w.cache.Invalidate(t.ctx, key); err != nil {
+		if err := t.w.cache.Invalidate(ctx, key); err != nil {
 			return err
 		}
 		if t.w.evictionCounter != nil {
 			t.w.evictionCounter.Inc()
 		}
 		if batch != nil {
-			if err := batch.Delete(t.ctx, key); err != nil {
+			if err := batch.Delete(ctx, key); err != nil {
 				return err
 			}
 		}
 
 		if reg.mode != ModeStrongLocal && t.w.bus != nil {
-			if err := t.w.bus.Publish(t.ctx, key); err != nil {
+			if err := t.w.bus.Publish(ctx, key); err != nil {
 				return err
 			}
 		}
 	}
 
 	if batch != nil {
-		if err := batch.Commit(t.ctx); err != nil {
+		if err := batch.Commit(ctx); err != nil {
 			return err
 		}
 	}
