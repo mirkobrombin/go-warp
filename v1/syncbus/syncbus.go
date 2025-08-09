@@ -30,6 +30,12 @@ func NewInMemoryBus() *InMemoryBus {
 
 // Publish implements Bus.Publish.
 func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
@@ -38,14 +44,24 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 	b.pending[key] = struct{}{}
 	chans := append([]chan struct{}(nil), b.subs[key]...)
 	b.mu.Unlock()
+
 	atomic.AddUint64(&b.published, 1)
 	for _, ch := range chans {
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			return ctx.Err()
+		default:
+		}
 		select {
 		case ch <- struct{}{}:
 			atomic.AddUint64(&b.delivered, 1)
 		default:
 		}
 	}
+
 	b.mu.Lock()
 	delete(b.pending, key)
 	b.mu.Unlock()
@@ -54,6 +70,12 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 
 // Subscribe implements Bus.Subscribe.
 func (b *InMemoryBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	ch := make(chan struct{}, 1)
 	b.mu.Lock()
 	b.subs[key] = append(b.subs[key], ch)
@@ -67,6 +89,12 @@ func (b *InMemoryBus) Subscribe(ctx context.Context, key string) (chan struct{},
 
 // Unsubscribe implements Bus.Unsubscribe.
 func (b *InMemoryBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	b.mu.Lock()
 	subs := b.subs[key]
 	for i, c := range subs {
