@@ -32,7 +32,10 @@ const (
 type registration struct {
 	ttl         time.Duration
 	ttlStrategy cache.TTLStrategy
+	ttlOpts     cache.TTLOptions
 	mode        Mode
+	currentTTL  time.Duration
+	lastAccess  time.Time
 }
 
 // Warp orchestrates the interaction between cache, merge engine and sync bus.
@@ -44,7 +47,7 @@ type Warp[T any] struct {
 	leases *LeaseManager[T]
 
 	mu   sync.RWMutex
-	regs map[string]registration
+	regs map[string]*registration
 
 	hitCounter      prometheus.Counter
 	missCounter     prometheus.Counter
@@ -104,7 +107,7 @@ func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.B
 		store:  s,
 		bus:    bus,
 		merges: m,
-		regs:   make(map[string]registration),
+		regs:   make(map[string]*registration),
 	}
 	w.leases = newLeaseManager[T](w, bus)
 	for _, opt := range opts {
@@ -114,26 +117,40 @@ func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.B
 }
 
 // Register registers a key with a specific mode and TTL.
-// It returns false if the key was already registered.
-func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration) bool {
+// Optional cache.TTLOption can enable sliding expiration or dynamic TTL
+// adjustments. It returns false if the key was already registered.
+func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration, opts ...cache.TTLOption) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if _, exists := w.regs[key]; exists {
 		return false
 	}
-	w.regs[key] = registration{ttl: ttl, mode: mode}
+	var to cache.TTLOptions
+	for _, opt := range opts {
+		opt(&to)
+	}
+	w.regs[key] = &registration{
+		ttl:        ttl,
+		ttlOpts:    to,
+		mode:       mode,
+		currentTTL: ttl,
+	}
 	return true
 }
 
 // RegisterDynamicTTL registers a key with a consistency mode and a dynamic TTL
 // strategy. It returns false if the key was already registered.
-func (w *Warp[T]) RegisterDynamicTTL(key string, mode Mode, strat cache.TTLStrategy) bool {
+func (w *Warp[T]) RegisterDynamicTTL(key string, mode Mode, strat cache.TTLStrategy, opts ...cache.TTLOption) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if _, exists := w.regs[key]; exists {
 		return false
 	}
-	w.regs[key] = registration{ttlStrategy: strat, mode: mode}
+	var to cache.TTLOptions
+	for _, opt := range opts {
+		opt(&to)
+	}
+	w.regs[key] = &registration{ttlStrategy: strat, ttlOpts: to, mode: mode}
 	return true
 }
 
@@ -179,6 +196,22 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		var zero T
 		return zero, err
 	} else if ok {
+		now := time.Now()
+		if reg.ttlStrategy != nil {
+			if reg.ttlOpts.Sliding || reg.ttlOpts.FreqThreshold > 0 {
+				ttl := reg.ttlStrategy.TTL(key)
+				if reg.ttlOpts.FreqThreshold > 0 {
+					ttl = reg.ttlOpts.Adjust(ttl, reg.lastAccess, now)
+				}
+				reg.currentTTL = ttl
+				reg.lastAccess = now
+				_ = w.cache.Set(ctx, key, v, ttl)
+			}
+		} else if reg.ttlOpts.Sliding || reg.ttlOpts.FreqThreshold > 0 {
+			reg.currentTTL = reg.ttlOpts.Adjust(reg.currentTTL, reg.lastAccess, now)
+			reg.lastAccess = now
+			_ = w.cache.Set(ctx, key, v, reg.currentTTL)
+		}
 		if w.hitCounter != nil {
 			w.hitCounter.Inc()
 		}
@@ -197,11 +230,14 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 			return zero, err
 		}
 		if ok {
-			mv := merge.Value[T]{Data: v, Timestamp: time.Now()}
+			now := time.Now()
+			mv := merge.Value[T]{Data: v, Timestamp: now}
 			ttl := reg.ttl
 			if reg.ttlStrategy != nil {
 				ttl = reg.ttlStrategy.TTL(key)
 			}
+			reg.currentTTL = ttl
+			reg.lastAccess = now
 			_ = w.cache.Set(ctx, key, mv, ttl)
 			return mv.Data, nil
 		}
@@ -293,6 +329,8 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	if reg.ttlStrategy != nil {
 		ttl = reg.ttlStrategy.TTL(key)
 	}
+	reg.currentTTL = ttl
+	reg.lastAccess = now
 	if err := w.cache.Set(ctx, key, newVal, ttl); err != nil {
 		return err
 	}
@@ -373,11 +411,14 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 		w.mu.RLock()
 		reg := w.regs[k]
 		w.mu.RUnlock()
-		mv := merge.Value[T]{Data: v, Timestamp: time.Now()}
+		now := time.Now()
+		mv := merge.Value[T]{Data: v, Timestamp: now}
 		ttl := reg.ttl
 		if reg.ttlStrategy != nil {
 			ttl = reg.ttlStrategy.TTL(k)
 		}
+		reg.currentTTL = ttl
+		reg.lastAccess = now
 		_ = w.cache.Set(ctx, k, mv, ttl)
 	}
 }
@@ -486,6 +527,8 @@ func (t *Txn[T]) Commit() error {
 		if reg.ttlStrategy != nil {
 			ttl = reg.ttlStrategy.TTL(key)
 		}
+		reg.currentTTL = ttl
+		reg.lastAccess = now
 		if err := t.w.cache.Set(ctx, key, newVal, ttl); err != nil {
 			return err
 		}
@@ -559,7 +602,8 @@ func (vc validatorCache[T]) Get(ctx context.Context, key string) (T, bool, error
 }
 
 func (vc validatorCache[T]) Set(ctx context.Context, key string, value T, _ time.Duration) error {
-	mv := merge.Value[T]{Data: value, Timestamp: time.Now()}
+	now := time.Now()
+	mv := merge.Value[T]{Data: value, Timestamp: now}
 	vc.w.mu.RLock()
 	reg, ok := vc.w.regs[key]
 	vc.w.mu.RUnlock()
@@ -570,6 +614,8 @@ func (vc validatorCache[T]) Set(ctx context.Context, key string, value T, _ time
 			reg.ttlStrategy.Record(key)
 			ttl = reg.ttlStrategy.TTL(key)
 		}
+		reg.currentTTL = ttl
+		reg.lastAccess = now
 	}
 	return vc.w.cache.Set(ctx, key, mv, ttl)
 }

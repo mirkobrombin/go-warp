@@ -78,6 +78,26 @@ strategy that yields more hits. It can be created with:
 c := cache.New[string](cache.WithStrategy[string](cache.AdaptiveStrategy))
 ```
 
+## Sliding and Dynamic TTL
+
+`Warp.Register` accepts additional options from the `cache` package to control
+TTL behaviour. `WithSliding` resets the TTL every time a key is read, while
+`WithDynamicTTL` adjusts the TTL based on access frequency.
+
+```go
+w.Register(
+    "greeting",
+    core.ModeStrongLocal,
+    time.Minute,
+    cache.WithSliding(),
+    cache.WithDynamicTTL(30*time.Second, time.Minute, 30*time.Second, time.Minute, 10*time.Minute),
+)
+```
+
+In the example above, if `greeting` is accessed more than once every
+30 seconds the TTL increases by one minute up to ten minutes. Infrequent
+accesses reduce the TTL but never below one minute.
+
 ## Redis Cache
 
 `RedisCache` uses [go-redis](https://github.com/redis/go-redis) and maps cache operations to Redis commands:
