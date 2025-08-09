@@ -71,3 +71,38 @@ func TestValidatorAlertMode(t *testing.T) {
 		t.Fatalf("expected mismatch metrics")
 	}
 }
+
+func TestValidatorScanAutoHeal(t *testing.T) {
+	ctx := context.Background()
+	c := cache.NewInMemory[string]()
+	s := adapter.NewInMemoryStore[string]()
+	_ = s.Set(ctx, "k", "v1")
+	_ = c.Set(ctx, "k", "v0", 0)
+	v := New[string](c, s, ModeAutoHeal, time.Millisecond)
+	v.scan(ctx)
+	if val, ok, err := c.Get(ctx, "k"); err != nil || !ok || val != "v1" {
+		t.Fatalf("expected cache restored to v1, got %v err %v", val, err)
+	}
+}
+
+type mockDigester struct{ calls int }
+
+func (m *mockDigester) Digest(v string) (string, error) {
+	m.calls++
+	return "mock", nil
+}
+
+func TestValidatorSetDigester(t *testing.T) {
+	ctx := context.Background()
+	c := cache.NewInMemory[string]()
+	s := adapter.NewInMemoryStore[string]()
+	_ = s.Set(ctx, "k", "v1")
+	_ = c.Set(ctx, "k", "v1", 0)
+	v := New[string](c, s, ModeNoop, time.Millisecond)
+	md := &mockDigester{}
+	v.SetDigester(md)
+	v.scan(ctx)
+	if md.calls != 2 {
+		t.Fatalf("expected custom digester to be used twice, got %d", md.calls)
+	}
+}
