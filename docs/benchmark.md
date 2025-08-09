@@ -12,16 +12,17 @@ BenchmarkRedisCacheSet-5           38400             34865 ns/op            1404
 BenchmarkRedisCacheGet-5           39525             29205 ns/op             536 B/op         23 allocs/op
 ```
 
-## Confronto
+## Comparison
 
-* **InMemoryCache** è il più veloce: ~122 ns per `Get` senza allocazioni e ~1.75 µs per `Set` con poche allocazioni.
-* **Ristretto** offre prestazioni comparabili in lettura (~150 ns) ma richiede più memoria e allocazioni, mentre le scritture sono circa 2× più lente.
-* **Redis** (tramite server in-memory) è significativamente più lento (∼29–35 µs) e utilizza molta più memoria; il costo di rete e serializzazione incide sulle prestazioni.
+* **InMemoryCache** is the fastest: ~122 ns for `Get` with no allocations and ~1.75 µs for `Set` with few allocations.
+* **Ristretto** offers comparable read performance (~150 ns) but uses more memory and allocations, while writes are about 2× slower.
+* **Redis** (through an in-memory server) is significantly slower (~29–35 µs) and uses much more memory; network and serialization overhead impact performance.
 
-## Conclusioni
+## Conclusions
 
-Per carichi in-process, `InMemoryCache` è la scelta più performante sia in termini di latenza che di utilizzo memoria.
-`Ristretto` rappresenta un'alternativa valida quando servono politiche di eviction più avanzate ma introduce overhead.
-Soluzioni basate su **Redis** sono ordini di grandezza più lente e allocano molta memoria, rendendole adatte quando la persistenza o la condivisione di rete sono requisiti fondamentali anziché la pura velocità.
+For in-process workloads, `InMemoryCache` is the most performant choice in terms of both latency and memory usage.
+`Ristretto` is a good alternative when more advanced eviction policies are needed but it introduces overhead.
+Redis-based solutions are orders of magnitude slower and allocate much more memory, making them suitable when persistence or network sharing are more important than raw speed.
 
-BigCache non è presente nel repository e quindi non è stato benchmarkato.
+BigCache is not included in the repository and was therefore not benchmarked.
+
