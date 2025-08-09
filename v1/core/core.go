@@ -45,6 +45,12 @@ type Warp[T any] struct {
 	latencyHist     prometheus.Histogram
 }
 
+// versionedCache extends Cache with the ability to retrieve values at a specific time.
+type versionedCache[T any] interface {
+	cache.Cache[merge.Value[T]]
+	GetAt(ctx context.Context, key string, at time.Time) (merge.Value[T], bool, error)
+}
+
 // Option configures a Warp instance.
 type Option[T any] func(*Warp[T])
 
@@ -173,6 +179,45 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 			_ = w.cache.Set(ctx, key, mv, ttl)
 			return mv.Data, nil
 		}
+	}
+	var zero T
+	return zero, ErrNotFound
+}
+
+// GetAt retrieves the value for a key at the specified time, if available.
+func (w *Warp[T]) GetAt(ctx context.Context, key string, at time.Time) (T, error) {
+	start := time.Now()
+	defer func() {
+		if w.latencyHist != nil {
+			w.latencyHist.Observe(time.Since(start).Seconds())
+		}
+	}()
+	w.mu.RLock()
+	reg, ok := w.regs[key]
+	w.mu.RUnlock()
+	if !ok {
+		var zero T
+		return zero, ErrUnregistered
+	}
+	if reg.ttlStrategy != nil {
+		reg.ttlStrategy.Record(key)
+	}
+	vc, ok := w.cache.(versionedCache[T])
+	if !ok {
+		var zero T
+		return zero, ErrNotFound
+	}
+	if v, ok, err := vc.GetAt(ctx, key, at); err != nil {
+		var zero T
+		return zero, err
+	} else if ok {
+		if w.hitCounter != nil {
+			w.hitCounter.Inc()
+		}
+		return v.Data, nil
+	}
+	if w.missCounter != nil {
+		w.missCounter.Inc()
 	}
 	var zero T
 	return zero, ErrNotFound

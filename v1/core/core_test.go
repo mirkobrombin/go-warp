@@ -9,6 +9,7 @@ import (
 
 	"github.com/mirkobrombin/go-warp/v1/adapter"
 	"github.com/mirkobrombin/go-warp/v1/cache"
+	"github.com/mirkobrombin/go-warp/v1/cache/versioned"
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
 	"github.com/mirkobrombin/go-warp/v1/validator"
@@ -150,6 +151,44 @@ func TestWarpSetGet(t *testing.T) {
 	}
 	if _, err := w.Get(ctx, "foo"); err == nil {
 		t.Fatalf("expected error after invalidate")
+	}
+}
+
+func TestWarpGetAtRollback(t *testing.T) {
+	ctx := context.Background()
+	base := cache.NewInMemory[merge.VersionedValue[string]]()
+	c := versioned.New[string](base, 5)
+	w := New[string](c, nil, nil, merge.NewEngine[string]())
+	w.Register("foo", ModeStrongLocal, time.Minute)
+
+	if err := w.Set(ctx, "foo", "v1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t1 := time.Now()
+	time.Sleep(time.Millisecond)
+	if err := w.Set(ctx, "foo", "v2"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	v, err := w.GetAt(ctx, "foo", t1)
+	if err != nil || v != "v1" {
+		t.Fatalf("expected v1, got %v err %v", v, err)
+	}
+}
+
+func TestWarpGetAtExpire(t *testing.T) {
+	ctx := context.Background()
+	base := cache.NewInMemory[merge.VersionedValue[string]]()
+	c := versioned.New[string](base, 5)
+	w := New[string](c, nil, nil, merge.NewEngine[string]())
+	w.Register("foo", ModeStrongLocal, 5*time.Millisecond)
+
+	if err := w.Set(ctx, "foo", "v1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, err := w.GetAt(ctx, "foo", time.Now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected not found after ttl, got %v", err)
 	}
 }
 
