@@ -1,6 +1,4 @@
 # Warp
-![Coverage](coverage.svg)
-
 Warp is a data orchestration and synchronization layer for distributed Go backends. It sits between your application and the primary storage, providing fast access to hot data with declarative consistency modes, pluggable caching and optional distributed invalidation.
 
 ## Features
