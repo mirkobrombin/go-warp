@@ -12,6 +12,11 @@ Warp is a data orchestration and synchronization layer for distributed Go backen
 - **Sync Bus** – propagate invalidations across nodes through a pub/sub interface.
 - **Merge Engine** – resolve conflicts with last-write-wins or custom merge functions.
 - **Validator** – background process to detect and optionally heal cache/store mismatches.
+- [**Lock**](docs/lock.md) – distributed locking primitives built on the sync bus.
+- [**Leases**](docs/leases.md) – group keys under revocable leases.
+- [**Versioned Cache**](docs/versioned-cache.md) – keep a history of values per key.
+- [**Watch Bus**](docs/watchbus.md) – lightweight message bus for streaming byte payloads.
+- [**Metrics**](docs/metrics.md) – Prometheus counters and gauges for Warp components.
 
 ## Installation
 
