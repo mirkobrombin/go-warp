@@ -55,4 +55,13 @@ go func() { for range ch { fmt.Println("invalidated") } }()
 _ = bus.Publish(ctx, "greeting")
 ```
 
+## Error Handling
+
+Warp propagates publish errors from the bus to callers. Operations like
+`Set` or `Invalidate` return the underlying error when the bus cannot
+publish an event. Subscribe failures are treated as best effort: if Warp
+cannot subscribe (for example while granting a lease), the operation
+continues without the subscription, and events for that key may be
+missed.
+
 Other adapters (e.g. Redis Streams) can be built on top of the same interface.
