@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -112,5 +113,33 @@ func TestInMemoryCacheEviction(t *testing.T) {
 	}
 	if _, ok, _ := c.Get(ctx, "c"); !ok {
 		t.Fatalf("expected c to be present")
+	}
+}
+
+func TestNewStrategies(t *testing.T) {
+	c := New[int]()
+	if _, ok := c.(*InMemoryCache[int]); !ok {
+		t.Fatalf("expected LRU cache by default")
+	}
+	c = New[int](WithStrategy[int](LFUStrategy))
+	if _, ok := c.(*LFUCache[int]); !ok {
+		t.Fatalf("expected LFU cache")
+	}
+}
+
+func TestAdaptiveSwitch(t *testing.T) {
+	ctx := context.Background()
+	c := New[int](WithStrategy[int](AdaptiveStrategy))
+	ac, ok := c.(*AdaptiveCache[int])
+	if !ok {
+		t.Fatalf("expected AdaptiveCache")
+	}
+	defer ac.Close()
+	for i := 0; i < 150; i++ {
+		key := fmt.Sprintf("k%d", i)
+		c.Get(ctx, key)
+	}
+	if !ac.useLFU.Load() {
+		t.Fatalf("expected adaptive cache to switch to LFU")
 	}
 }

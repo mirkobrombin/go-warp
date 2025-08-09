@@ -1,6 +1,6 @@
 # Cache Layer
 
-The `cache` package defines the `Cache` interface and provides in-memory, Ristretto and Redis implementations.
+The `cache` package defines the `Cache` interface and provides in-memory caches with multiple eviction strategies as well as a Redis implementation.
 
 ## Interface
 
@@ -12,14 +12,30 @@ type Cache[T any] interface {
 }
 ```
 
-## In-Memory Cache
+## Strategies
 
-`InMemoryCache` is a simple map based cache with TTL support and basic metrics.
+`cache.New` constructs an in-memory cache. By default it uses an LRU policy but a different strategy can be selected:
+
+```go
+c := cache.New[string]()                                 // LRU
+c := cache.New[string](cache.WithStrategy[string](cache.LFUStrategy))
+c := cache.New[string](cache.WithStrategy[string](cache.AdaptiveStrategy))
+```
+
+The strategies are:
+
+* **LRU** – least recently used, implemented by `LRUCache`.
+* **LFU** – least frequently used, backed by the Ristretto library.
+* **Adaptive** – dynamically switches between LRU and LFU based on the observed hit/miss ratio.
+
+## LRU Cache
+
+`LRUCache` is a simple map based cache with TTL support and basic metrics.
 It also runs a background goroutine that periodically removes expired items.
 The sweep happens every minute by default and can be customized:
 
 ```go
-c := cache.NewInMemory[string](cache.WithSweepInterval[string](30 * time.Second))
+c := cache.NewLRU[string](cache.WithSweepInterval[string](30 * time.Second))
 stats := c.Metrics() // Hits, Misses, Size
 ```
 
@@ -31,26 +47,35 @@ You can also limit the number of items stored by providing `WithMaxEntries`. Whe
 the cache grows beyond this limit the least recently used item is evicted:
 
 ```go
-c := cache.NewInMemory[string](cache.WithMaxEntries[string](100))
+c := cache.NewLRU[string](cache.WithMaxEntries[string](100))
 ```
 
 Calls to `Get` mark items as recently used, ensuring that frequently accessed
 entries remain in the cache.
 
-## Ristretto Cache
+## LFU Cache
 
-`RistrettoCache` builds on [dgraph-io/ristretto](https://github.com/dgraph-io/ristretto)
+`LFUCache` builds on [dgraph-io/ristretto](https://github.com/dgraph-io/ristretto)
 and offers a high performance in-memory cache:
 
 ```go
-c := cache.NewRistretto[string]()
+c := cache.NewLFU[string]()
 ```
 
 You can supply your own configuration through `WithRistretto`:
 
 ```go
 cfg := &ristretto.Config{NumCounters: 1e5, MaxCost: 1 << 20, BufferItems: 64}
-c := cache.NewRistretto[string](cache.WithRistretto(cfg))
+c := cache.NewLFU[string](cache.WithRistretto(cfg))
+```
+
+## Adaptive Cache
+
+`AdaptiveCache` maintains both LRU and LFU caches and periodically switches to the
+strategy that yields more hits. It can be created with:
+
+```go
+c := cache.New[string](cache.WithStrategy[string](cache.AdaptiveStrategy))
 ```
 
 ## Redis Cache
@@ -66,12 +91,12 @@ Both caches implement the same interface and can be swapped depending on deploym
 
 ## Metrics
 
-`InMemoryCache` can emit Prometheus metrics for cache hits, misses, evictions and operation latency. Metrics are registered on a
+`LRUCache` can emit Prometheus metrics for cache hits, misses, evictions and operation latency. Metrics are registered on a
 registry created with `metrics.NewRegistry` and exposed via the standard Prometheus HTTP handler:
 
 ```go
-reg := metrics.NewRegistry()
-c := cache.NewInMemory[string](cache.WithMetrics[string](reg))
+ reg := metrics.NewRegistry()
+ c := cache.NewLRU[string](cache.WithMetrics[string](reg))
 http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 ```
 
