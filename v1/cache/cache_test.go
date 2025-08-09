@@ -143,3 +143,39 @@ func TestAdaptiveSwitch(t *testing.T) {
 		t.Fatalf("expected adaptive cache to switch to LFU")
 	}
 }
+
+func TestTTLOptionsAdjust(t *testing.T) {
+	now := time.Now()
+	opts := TTLOptions{
+		FreqThreshold: 10 * time.Millisecond,
+		Increment:     5 * time.Millisecond,
+		Decrement:     3 * time.Millisecond,
+		MinTTL:        4 * time.Millisecond,
+		MaxTTL:        20 * time.Millisecond,
+	}
+
+	t.Run("increment", func(t *testing.T) {
+		ttl := opts.Adjust(10*time.Millisecond, now.Add(-5*time.Millisecond), now)
+		if ttl != 15*time.Millisecond {
+			t.Fatalf("expected 15ms, got %v", ttl)
+		}
+	})
+
+	t.Run("decrement", func(t *testing.T) {
+		ttl := opts.Adjust(15*time.Millisecond, now.Add(-20*time.Millisecond), now)
+		if ttl != 12*time.Millisecond {
+			t.Fatalf("expected 12ms, got %v", ttl)
+		}
+	})
+
+	t.Run("sliding", func(t *testing.T) {
+		opts.Sliding = true
+		ttl := opts.Adjust(12*time.Millisecond, now.Add(-5*time.Millisecond), now)
+		if ttl != 17*time.Millisecond {
+			t.Fatalf("expected 17ms, got %v", ttl)
+		}
+		if !opts.Sliding {
+			t.Fatalf("expected sliding to remain enabled")
+		}
+	})
+}

@@ -299,6 +299,10 @@ func (c *InMemoryCache[T]) sweeper() {
 func (c *InMemoryCache[T]) Close() {
 	c.cancel()
 	c.wg.Wait()
+	c.mu.Lock()
+	c.items = make(map[string]item[T])
+	c.order.Init()
+	c.mu.Unlock()
 }
 
 // Stats reports basic metrics about cache usage.
