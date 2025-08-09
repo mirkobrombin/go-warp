@@ -1,15 +1,20 @@
 # Warp Overview
 
-Warp is a data orchestration and synchronization layer designed for distributed backends. It sits between the application logic and the primary storage, offering fast access to hot data with configurable consistency modes and distributed invalidation.
+Warp is a data orchestration and synchronization layer designed for distributed backends. It sits between the application logic and the primary storage, offering fast access to hot data with configurable consistency modes, distributed invalidation, locking and leases, a watch bus for streaming updates, versioned caching, and built-in metrics.
 
 Warp is composed of modular packages:
 
-- [Core](core.md) – orchestrates cache, storage, sync bus and merge engine.
-- [Cache](cache.md) – pluggable cache implementations with TTL and metrics.
+- [Core](core.md) – orchestrates cache, storage, buses and merge engine.
+- [Cache](cache.md) – pluggable cache implementations with TTL.
 - [Adapter](adapter.md) – abstraction over primary storage used for warmup and fallback.
 - [Sync Bus](syncbus.md) – propagation of invalidations across nodes.
+- [Watch Bus](watchbus.md) – lightweight message bus for streaming byte payloads.
+- [Lock](lock.md) – distributed locking primitives built on the bus.
+- [Leases](leases.md) – revocable grouping of keys renewed periodically.
+- [Versioned Cache](versioned-cache.md) – wraps a cache to keep historical values per key.
 - [Merge Engine](merge.md) – conflict resolution strategies including custom merge functions.
 - [Validator](validator.md) – optional background consistency checks between cache and storage.
+- [Metrics](metrics.md) – Prometheus counters and gauges for Warp components.
 
 ## Deployment
 
