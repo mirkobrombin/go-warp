@@ -71,3 +71,67 @@ func TestRedisStorePersistenceAndWarmup(t *testing.T) {
 		t.Fatalf("Warmup/Get: expected bar, got %v err %v", v, err)
 	}
 }
+
+// newRedisStoreWithServer returns a Redis-backed store along with the
+// underlying miniredis server and client for tests that need to manipulate
+// the server state.
+func newRedisStoreWithServer[T any](t *testing.T) (*adapter.RedisStore[T], context.Context, *miniredis.Miniredis, *redis.Client) {
+	t.Helper()
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis run: %v", err)
+	}
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	t.Cleanup(func() {
+		_ = client.FlushDB(ctx).Err()
+		_ = client.Close()
+		if mr != nil {
+			mr.Close()
+		}
+	})
+	return adapter.NewRedisStore[T](client), ctx, mr, client
+}
+
+func TestRedisStoreSetMarshalError(t *testing.T) {
+	s, ctx := newRedisStore[chan int](t)
+	ch := make(chan int)
+	if err := s.Set(ctx, "foo", ch); err == nil {
+		t.Fatalf("expected marshal error")
+	}
+}
+
+func TestRedisStoreGetUnmarshalError(t *testing.T) {
+	s, ctx, _, client := newRedisStoreWithServer[string](t)
+	if err := client.Set(ctx, "foo", "invalid", 0).Err(); err != nil {
+		t.Fatalf("client.Set: %v", err)
+	}
+	if _, _, err := s.Get(ctx, "foo"); err == nil {
+		t.Fatalf("expected unmarshal error")
+	}
+}
+
+func TestRedisStoreKeysScanError(t *testing.T) {
+	s, ctx, mr, _ := newRedisStoreWithServer[string](t)
+	mr.Close()
+	mr = nil
+	if _, err := s.Keys(ctx); err == nil {
+		t.Fatalf("expected scan error")
+	}
+}
+
+func TestRedisStoreBatchCommitError(t *testing.T) {
+	s, ctx, mr, _ := newRedisStoreWithServer[string](t)
+	b, err := s.Batch(ctx)
+	if err != nil {
+		t.Fatalf("Batch: %v", err)
+	}
+	if err := b.Set(ctx, "foo", "bar"); err != nil {
+		t.Fatalf("Batch Set: %v", err)
+	}
+	mr.Close()
+	mr = nil
+	if err := b.Commit(ctx); err == nil {
+		t.Fatalf("expected commit error")
+	}
+}
