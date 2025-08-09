@@ -113,6 +113,21 @@ func (b *NATSBus) Unsubscribe(ctx context.Context, key string, ch chan struct{})
 	return nil
 }
 
+// RevokeLease publishes a lease revocation event.
+func (b *NATSBus) RevokeLease(ctx context.Context, id string) error {
+	return b.Publish(ctx, "lease:"+id)
+}
+
+// SubscribeLease subscribes to lease revocation events.
+func (b *NATSBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+	return b.Subscribe(ctx, "lease:"+id)
+}
+
+// UnsubscribeLease cancels a lease revocation subscription.
+func (b *NATSBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+	return b.Unsubscribe(ctx, "lease:"+id, ch)
+}
+
 // Metrics returns the published and delivered counts.
 func (b *NATSBus) Metrics() Metrics {
 	return Metrics{

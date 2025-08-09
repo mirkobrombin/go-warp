@@ -36,6 +36,7 @@ type Warp[T any] struct {
 	store  adapter.Store[T]
 	bus    syncbus.Bus
 	merges *merge.Engine[T]
+	leases *LeaseManager[T]
 
 	mu   sync.RWMutex
 	regs map[string]registration
@@ -100,6 +101,7 @@ func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.B
 		merges: m,
 		regs:   make(map[string]registration),
 	}
+	w.leases = newLeaseManager[T](w, bus)
 	for _, opt := range opts {
 		opt(w)
 	}
@@ -353,6 +355,21 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 		}
 		_ = w.cache.Set(ctx, k, mv, ttl)
 	}
+}
+
+// GrantLease creates a new lease with the given TTL.
+func (w *Warp[T]) GrantLease(ctx context.Context, ttl time.Duration) (string, error) {
+	return w.leases.Grant(ctx, ttl)
+}
+
+// RevokeLease stops a lease and propagates the revocation.
+func (w *Warp[T]) RevokeLease(ctx context.Context, id string) {
+	w.leases.Revoke(ctx, id)
+}
+
+// AttachKey associates a key with an existing lease.
+func (w *Warp[T]) AttachKey(id, key string) {
+	w.leases.Attach(id, key)
 }
 
 // Txn creates a new transaction associated with this Warp.

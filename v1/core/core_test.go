@@ -33,6 +33,13 @@ type errBus struct{ err error }
 func (b errBus) Publish(ctx context.Context, key string) error                       { return b.err }
 func (b errBus) Subscribe(ctx context.Context, key string) (chan struct{}, error)    { return nil, nil }
 func (b errBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error { return nil }
+func (b errBus) RevokeLease(ctx context.Context, id string) error                    { return b.err }
+func (b errBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+	return nil, nil
+}
+func (b errBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+	return nil
+}
 
 type ttlCache[T any] struct {
 	mu    sync.Mutex

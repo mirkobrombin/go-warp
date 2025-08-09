@@ -12,6 +12,9 @@ type Bus interface {
 	Publish(ctx context.Context, key string) error
 	Subscribe(ctx context.Context, key string) (chan struct{}, error)
 	Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
+	RevokeLease(ctx context.Context, id string) error
+	SubscribeLease(ctx context.Context, id string) (chan struct{}, error)
+	UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error
 }
 
 // InMemoryBus is a local implementation of Bus mainly for testing.
@@ -111,6 +114,21 @@ func (b *InMemoryBus) Unsubscribe(ctx context.Context, key string, ch chan struc
 	}
 	b.mu.Unlock()
 	return nil
+}
+
+// RevokeLease publishes a lease revocation event.
+func (b *InMemoryBus) RevokeLease(ctx context.Context, id string) error {
+	return b.Publish(ctx, "lease:"+id)
+}
+
+// SubscribeLease subscribes to lease revocation events.
+func (b *InMemoryBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+	return b.Subscribe(ctx, "lease:"+id)
+}
+
+// UnsubscribeLease cancels a lease revocation subscription.
+func (b *InMemoryBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+	return b.Unsubscribe(ctx, "lease:"+id, ch)
 }
 
 type Metrics struct {

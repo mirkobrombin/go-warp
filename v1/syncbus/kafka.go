@@ -141,6 +141,21 @@ func (b *KafkaBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}
 	return nil
 }
 
+// RevokeLease publishes a lease revocation event.
+func (b *KafkaBus) RevokeLease(ctx context.Context, id string) error {
+	return b.Publish(ctx, "lease:"+id)
+}
+
+// SubscribeLease subscribes to lease revocation events.
+func (b *KafkaBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+	return b.Subscribe(ctx, "lease:"+id)
+}
+
+// UnsubscribeLease cancels a lease revocation subscription.
+func (b *KafkaBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+	return b.Unsubscribe(ctx, "lease:"+id, ch)
+}
+
 // Metrics returns the published and delivered counts.
 func (b *KafkaBus) Metrics() Metrics {
 	return Metrics{
