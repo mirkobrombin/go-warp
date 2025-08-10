@@ -54,6 +54,8 @@ type Warp[T any] struct {
 	merges *merge.Engine[T]
 	leases *LeaseManager[T]
 
+	publishErrCh chan error
+
 	shards [regShardCount]regShard
 
 	hitCounter      prometheus.Counter
@@ -118,16 +120,22 @@ func (w *Warp[T]) getReg(key string) (*registration, bool) {
 	return reg, ok
 }
 
+// PublishErrors exposes a channel where asynchronous publish errors are sent.
+func (w *Warp[T]) PublishErrors() <-chan error {
+	return w.publishErrCh
+}
+
 // New creates a new Warp instance.
 func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.Bus, m *merge.Engine[T], opts ...Option[T]) *Warp[T] {
 	if m == nil {
 		m = merge.NewEngine[T]()
 	}
 	w := &Warp[T]{
-		cache:  c,
-		store:  s,
-		bus:    bus,
-		merges: m,
+		cache:        c,
+		store:        s,
+		bus:          bus,
+		merges:       m,
+		publishErrCh: make(chan error, 1),
 	}
 	for i := 0; i < regShardCount; i++ {
 		w.shards[i].regs = make(map[string]*registration)
@@ -370,9 +378,14 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	}
 
 	if reg.mode != ModeStrongLocal && w.bus != nil {
-		if err := w.bus.Publish(ctx, key); err != nil {
-			return err
-		}
+		go func() {
+			if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
+				select {
+				case w.publishErrCh <- err:
+				default:
+				}
+			}
+		}()
 	}
 
 	return nil
@@ -405,9 +418,14 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 		w.evictionCounter.Inc()
 	}
 	if reg.mode != ModeStrongLocal && w.bus != nil {
-		if err := w.bus.Publish(ctx, key); err != nil {
-			return err
-		}
+		go func() {
+			if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
+				select {
+				case w.publishErrCh <- err:
+				default:
+				}
+			}
+		}()
 	}
 	return nil
 }

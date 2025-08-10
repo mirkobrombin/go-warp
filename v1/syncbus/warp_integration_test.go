@@ -51,6 +51,7 @@ func TestRedisBusConcurrentInvalidations(t *testing.T) {
 		_ = w2.Invalidate(ctx, "key")
 	}()
 	wg.Wait()
+	time.Sleep(50 * time.Millisecond)
 	metrics := bus.Metrics()
 	if metrics.Published != 1 {
 		t.Fatalf("expected 1 published got %d", metrics.Published)

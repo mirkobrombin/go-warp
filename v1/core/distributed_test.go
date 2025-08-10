@@ -61,7 +61,7 @@ func TestWarpDistributedRedis(t *testing.T) {
 	if err := w1.Set(ctx, "counter", 2); err != nil {
 		t.Fatalf("set2: %v", err)
 	}
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	v, err := w2.Get(ctx, "counter")
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -86,7 +86,7 @@ func TestWarpDistributedRedis(t *testing.T) {
 	}()
 	close(start)
 	wg.Wait()
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	after := bus.Metrics()
 	if after.Published-before.Published != 1 {
 		t.Fatalf("expected 1 publish, got %d", after.Published-before.Published)
@@ -140,7 +140,7 @@ func TestWarpDistributedNATS(t *testing.T) {
 	if err := w1.Set(ctx, "counter", 2); err != nil {
 		t.Fatalf("set2: %v", err)
 	}
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	v, err := w2.Get(ctx, "counter")
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -165,7 +165,7 @@ func TestWarpDistributedNATS(t *testing.T) {
 	}()
 	close(start)
 	wg.Wait()
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	after := bus.Metrics()
 	if after.Published-before.Published != 1 {
 		t.Fatalf("expected 1 publish, got %d", after.Published-before.Published)
