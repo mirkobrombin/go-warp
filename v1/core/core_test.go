@@ -42,6 +42,29 @@ func (b errBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{
 	return nil
 }
 
+type slowBus struct {
+	delay time.Duration
+	done  chan struct{}
+}
+
+func (b *slowBus) Publish(ctx context.Context, key string) error {
+	time.Sleep(b.delay)
+	if b.done != nil {
+		b.done <- struct{}{}
+	}
+	return nil
+}
+
+func (b *slowBus) Subscribe(ctx context.Context, key string) (chan struct{}, error)    { return nil, nil }
+func (b *slowBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error { return nil }
+func (b *slowBus) RevokeLease(ctx context.Context, id string) error                    { return nil }
+func (b *slowBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+	return nil, nil
+}
+func (b *slowBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+	return nil
+}
+
 type ttlCache[T any] struct {
 	mu    sync.Mutex
 	items map[string]T
@@ -318,8 +341,16 @@ func TestWarpSetPublishError(t *testing.T) {
 	expected := errors.New("boom")
 	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, errBus{err: expected}, merge.NewEngine[string]())
 	w.Register("foo", ModeEventualDistributed, time.Minute)
-	if err := w.Set(ctx, "foo", "bar"); !errors.Is(err, expected) {
-		t.Fatalf("expected %v, got %v", expected, err)
+	if err := w.Set(ctx, "foo", "bar"); err != nil {
+		t.Fatalf("unexpected set error: %v", err)
+	}
+	select {
+	case err := <-w.PublishErrors():
+		if !errors.Is(err, expected) {
+			t.Fatalf("expected %v, got %v", expected, err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("expected publish error")
 	}
 }
 
@@ -328,8 +359,16 @@ func TestWarpInvalidatePublishError(t *testing.T) {
 	expected := errors.New("boom")
 	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, errBus{err: expected}, merge.NewEngine[string]())
 	w.Register("foo", ModeEventualDistributed, time.Minute)
-	if err := w.Invalidate(ctx, "foo"); !errors.Is(err, expected) {
-		t.Fatalf("expected %v, got %v", expected, err)
+	if err := w.Invalidate(ctx, "foo"); err != nil {
+		t.Fatalf("unexpected invalidate error: %v", err)
+	}
+	select {
+	case err := <-w.PublishErrors():
+		if !errors.Is(err, expected) {
+			t.Fatalf("expected %v, got %v", expected, err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("expected publish error")
 	}
 }
 
@@ -442,4 +481,44 @@ func TestConcurrentRegisterGetSet(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestWarpSetAsyncPublish(t *testing.T) {
+	bus := &slowBus{delay: 100 * time.Millisecond, done: make(chan struct{}, 1)}
+	c := cache.NewInMemory[merge.Value[string]]()
+	w := New[string](c, nil, bus, merge.NewEngine[string]())
+	w.Register("foo", ModeEventualDistributed, time.Minute)
+
+	start := time.Now()
+	if err := w.Set(context.Background(), "foo", "bar"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d := time.Since(start); d >= 100*time.Millisecond {
+		t.Fatalf("set blocked on publish: %v", d)
+	}
+	select {
+	case <-bus.done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("publish did not complete")
+	}
+}
+
+func TestWarpInvalidateAsyncPublish(t *testing.T) {
+	bus := &slowBus{delay: 100 * time.Millisecond, done: make(chan struct{}, 1)}
+	c := cache.NewInMemory[merge.Value[string]]()
+	w := New[string](c, nil, bus, merge.NewEngine[string]())
+	w.Register("foo", ModeEventualDistributed, time.Minute)
+
+	start := time.Now()
+	if err := w.Invalidate(context.Background(), "foo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d := time.Since(start); d >= 100*time.Millisecond {
+		t.Fatalf("invalidate blocked on publish: %v", d)
+	}
+	select {
+	case <-bus.done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("publish did not complete")
+	}
 }

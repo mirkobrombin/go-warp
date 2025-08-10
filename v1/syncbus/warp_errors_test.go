@@ -33,8 +33,16 @@ func TestWarpPublishError(t *testing.T) {
 	bus := &failingBus{publishErr: errors.New("publish failed")}
 	w := core.New[string](cache.NewInMemory[merge.Value[string]](), nil, bus, merge.NewEngine[string]())
 	w.Register("key", core.ModeStrongDistributed, time.Minute)
-	if err := w.Invalidate(context.Background(), "key"); err == nil {
-		t.Fatal("expected invalidate error when bus publish fails")
+	if err := w.Invalidate(context.Background(), "key"); err != nil {
+		t.Fatalf("unexpected invalidate error: %v", err)
+	}
+	select {
+	case err := <-w.PublishErrors():
+		if !errors.Is(err, bus.publishErr) {
+			t.Fatalf("expected %v got %v", bus.publishErr, err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected publish error")
 	}
 }
 
