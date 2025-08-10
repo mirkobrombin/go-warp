@@ -2,6 +2,7 @@ package syncbus
 
 import (
 	"context"
+	stdErrors "errors"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -9,7 +10,11 @@ import (
 
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
+
+	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
 )
+
+const redisBusTimeout = 5 * time.Second
 
 type redisSubscription struct {
 	pubsub *redis.PubSub
@@ -39,6 +44,12 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 
 // Publish implements Bus.Publish.
 func (b *RedisBus) Publish(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		return err
+	}
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
@@ -53,6 +64,9 @@ func (b *RedisBus) Publish(ctx context.Context, key string) error {
 			b.mu.Lock()
 			delete(b.pending, key)
 			b.mu.Unlock()
+			if stdErrors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return warperrors.ErrTimeout
+			}
 			return ctx.Err()
 		case <-time.After(time.Duration(j)):
 		}
@@ -62,10 +76,15 @@ func (b *RedisBus) Publish(ctx context.Context, key string) error {
 	backoff := 100 * time.Millisecond
 	var err error
 	for {
-		err = b.client.Publish(ctx, key, id).Err()
+		cctx, cancel := context.WithTimeout(ctx, redisBusTimeout)
+		err = b.client.Publish(cctx, key, id).Err()
+		cancel()
 		if err == nil {
 			atomic.AddUint64(&b.published, 1)
 			break
+		}
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
 		}
 		_ = b.reconnect()
 		select {
@@ -73,6 +92,9 @@ func (b *RedisBus) Publish(ctx context.Context, key string) error {
 			b.mu.Lock()
 			delete(b.pending, key)
 			b.mu.Unlock()
+			if stdErrors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return warperrors.ErrTimeout
+			}
 			return ctx.Err()
 		default:
 		}
@@ -91,11 +113,17 @@ func (b *RedisBus) Publish(ctx context.Context, key string) error {
 		delete(b.pending, key)
 		b.mu.Unlock()
 	})
-	return err
+	return nil
 }
 
 // Subscribe implements Bus.Subscribe.
 func (b *RedisBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return nil, warperrors.ErrTimeout
+		}
+		return nil, err
+	}
 	ch := make(chan struct{}, 1)
 	backoff := 100 * time.Millisecond
 	for {
@@ -107,8 +135,11 @@ func (b *RedisBus) Subscribe(ctx context.Context, key string) (chan struct{}, er
 			break
 		}
 		b.mu.Unlock()
-		ps := b.client.Subscribe(ctx, key)
-		if _, err := ps.Receive(ctx); err == nil {
+		cctx, cancel := context.WithTimeout(ctx, redisBusTimeout)
+		ps := b.client.Subscribe(cctx, key)
+		_, err := ps.Receive(cctx)
+		cancel()
+		if err == nil {
 			b.mu.Lock()
 			sub = &redisSubscription{pubsub: ps, chans: []chan struct{}{ch}}
 			b.subs[key] = sub
@@ -117,9 +148,15 @@ func (b *RedisBus) Subscribe(ctx context.Context, key string) (chan struct{}, er
 			break
 		}
 		_ = ps.Close()
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return nil, warperrors.ErrTimeout
+		}
 		_ = b.reconnect()
 		select {
 		case <-ctx.Done():
+			if stdErrors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, warperrors.ErrTimeout
+			}
 			return nil, ctx.Err()
 		default:
 		}
@@ -163,6 +200,12 @@ func (b *RedisBus) dispatch(key string, sub *redisSubscription) {
 
 // Unsubscribe implements Bus.Unsubscribe.
 func (b *RedisBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error {
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		return err
+	}
 	b.mu.Lock()
 	sub := b.subs[key]
 	if sub == nil {
@@ -180,8 +223,16 @@ func (b *RedisBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}
 	if len(sub.chans) == 0 {
 		delete(b.subs, key)
 		b.mu.Unlock()
-		_ = sub.pubsub.Unsubscribe(ctx, key)
-		return sub.pubsub.Close()
+		cctx, cancel := context.WithTimeout(ctx, redisBusTimeout)
+		defer cancel()
+		_ = sub.pubsub.Unsubscribe(cctx, key)
+		if err := sub.pubsub.Close(); err != nil {
+			if stdErrors.Is(err, redis.ErrClosed) {
+				return warperrors.ErrConnectionClosed
+			}
+			return err
+		}
+		return nil
 	}
 	b.mu.Unlock()
 	return nil

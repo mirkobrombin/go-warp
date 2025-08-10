@@ -3,10 +3,15 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	stdErrors "errors"
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+
+	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
 )
+
+const redisCacheTimeout = 5 * time.Second
 
 // Codec defines methods for encoding and decoding values stored in Redis.
 type Codec interface {
@@ -38,11 +43,31 @@ func NewRedis[T any](client *redis.Client, codec Codec) *RedisCache[T] {
 // Get retrieves the value for the given key.
 func (c *RedisCache[T]) Get(ctx context.Context, key string) (T, bool, error) {
 	var zero T
-	data, err := c.client.Get(ctx, key).Bytes()
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return zero, false, warperrors.ErrTimeout
+		}
+		return zero, false, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, redisCacheTimeout)
+	defer cancel()
+	data, err := c.client.Get(cctx, key).Bytes()
 	if err == redis.Nil {
 		return zero, false, nil
 	}
 	if err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return zero, false, warperrors.ErrTimeout
+		}
+		if stdErrors.Is(err, redis.ErrClosed) {
+			return zero, false, warperrors.ErrConnectionClosed
+		}
+		return zero, false, err
+	}
+	if err := cctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return zero, false, warperrors.ErrTimeout
+		}
 		return zero, false, err
 	}
 	var v T
@@ -54,14 +79,48 @@ func (c *RedisCache[T]) Get(ctx context.Context, key string) (T, bool, error) {
 
 // Set stores the value for the given key for the specified TTL.
 func (c *RedisCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		return err
+	}
 	data, err := c.codec.Marshal(value)
 	if err != nil {
 		return err
 	}
-	return c.client.Set(ctx, key, data, ttl).Err()
+	cctx, cancel := context.WithTimeout(ctx, redisCacheTimeout)
+	defer cancel()
+	if err := c.client.Set(cctx, key, data, ttl).Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		if stdErrors.Is(err, redis.ErrClosed) {
+			return warperrors.ErrConnectionClosed
+		}
+		return err
+	}
+	return nil
 }
 
 // Invalidate removes the key from Redis.
 func (c *RedisCache[T]) Invalidate(ctx context.Context, key string) error {
-	return c.client.Del(ctx, key).Err()
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, redisCacheTimeout)
+	defer cancel()
+	if err := c.client.Del(cctx, key).Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		if stdErrors.Is(err, redis.ErrClosed) {
+			return warperrors.ErrConnectionClosed
+		}
+		return err
+	}
+	return nil
 }
