@@ -3,7 +3,7 @@ Warp is a data orchestration and synchronization layer for distributed Go backen
 
 ## Features
 
-- **Configurable Consistency** – choose between strong local, eventual distributed and strong distributed modes per key.
+- **Configurable Consistency** – choose between strong local, eventual distributed and strong distributed modes per key (see [mode table](docs/core.md#registration)).
 - **Pluggable Cache** – in-memory and Redis caches with TTL, warmup, metrics and
   background eviction of expired items ([LRU](docs/glossary.md#lru), [LFU/TinyLFU](docs/glossary.md#lfu-tinylfu)).
 - **Storage Adapters** – abstract fallback storage for warmup and persistent writes.
@@ -42,7 +42,7 @@ func main() {
     ctx := context.Background()
     store := adapter.NewInMemoryStore[string]()
     w := core.New[string](cache.NewInMemory[merge.Value[string]](), store, nil, merge.NewEngine[string]())
-    w.Register("greeting", core.ModeStrongLocal, time.Minute)
+    w.Register("greeting", core.ModeStrongLocal, time.Minute) // see docs/core.md for mode options
     w.Warmup(ctx) // optional warmup from store
     if err := w.Set(ctx, "greeting", "hello"); err != nil {
         panic(err)
@@ -83,8 +83,8 @@ func main() {
     w1 := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, engine)
     w2 := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, engine)
 
-    w1.Register("counter", core.ModeEventualDistributed, time.Minute)
-    w2.Register("counter", core.ModeEventualDistributed, time.Minute)
+    w1.Register("counter", core.ModeEventualDistributed, time.Minute) // see docs/core.md for mode options
+    w2.Register("counter", core.ModeEventualDistributed, time.Minute) // see docs/core.md for mode options
 
     ch, _ := bus.Subscribe(ctx, "counter")
     defer bus.Unsubscribe(ctx, "counter", ch)
