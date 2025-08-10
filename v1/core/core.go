@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"hash/fnv"
 	"reflect"
 	"sync"
 	"time"
@@ -38,6 +39,13 @@ type registration struct {
 	lastAccess  time.Time
 }
 
+type regShard struct {
+	sync.RWMutex
+	regs map[string]*registration
+}
+
+const regShardCount = 32
+
 // Warp orchestrates the interaction between cache, merge engine and sync bus.
 type Warp[T any] struct {
 	cache  cache.Cache[merge.Value[T]]
@@ -46,8 +54,7 @@ type Warp[T any] struct {
 	merges *merge.Engine[T]
 	leases *LeaseManager[T]
 
-	mu   sync.RWMutex
-	regs map[string]*registration
+	shards [regShardCount]regShard
 
 	hitCounter      prometheus.Counter
 	missCounter     prometheus.Counter
@@ -97,6 +104,20 @@ func WithMetrics[T any](reg prometheus.Registerer) Option[T] {
 	}
 }
 
+func (w *Warp[T]) shard(key string) *regShard {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return &w.shards[h.Sum32()%regShardCount]
+}
+
+func (w *Warp[T]) getReg(key string) (*registration, bool) {
+	shard := w.shard(key)
+	shard.RLock()
+	reg, ok := shard.regs[key]
+	shard.RUnlock()
+	return reg, ok
+}
+
 // New creates a new Warp instance.
 func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.Bus, m *merge.Engine[T], opts ...Option[T]) *Warp[T] {
 	if m == nil {
@@ -107,7 +128,9 @@ func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.B
 		store:  s,
 		bus:    bus,
 		merges: m,
-		regs:   make(map[string]*registration),
+	}
+	for i := 0; i < regShardCount; i++ {
+		w.shards[i].regs = make(map[string]*registration)
 	}
 	w.leases = newLeaseManager[T](w, bus)
 	for _, opt := range opts {
@@ -120,16 +143,17 @@ func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.B
 // Optional cache.TTLOption can enable sliding expiration or dynamic TTL
 // adjustments. It returns false if the key was already registered.
 func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration, opts ...cache.TTLOption) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if _, exists := w.regs[key]; exists {
+	shard := w.shard(key)
+	shard.Lock()
+	defer shard.Unlock()
+	if _, exists := shard.regs[key]; exists {
 		return false
 	}
 	var to cache.TTLOptions
 	for _, opt := range opts {
 		opt(&to)
 	}
-	w.regs[key] = &registration{
+	shard.regs[key] = &registration{
 		ttl:        ttl,
 		ttlOpts:    to,
 		mode:       mode,
@@ -141,24 +165,26 @@ func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration, opts ...cac
 // RegisterDynamicTTL registers a key with a consistency mode and a dynamic TTL
 // strategy. Mode options are documented in docs/core.md. It returns false if the key was already registered.
 func (w *Warp[T]) RegisterDynamicTTL(key string, mode Mode, strat cache.TTLStrategy, opts ...cache.TTLOption) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if _, exists := w.regs[key]; exists {
+	shard := w.shard(key)
+	shard.Lock()
+	defer shard.Unlock()
+	if _, exists := shard.regs[key]; exists {
 		return false
 	}
 	var to cache.TTLOptions
 	for _, opt := range opts {
 		opt(&to)
 	}
-	w.regs[key] = &registration{ttlStrategy: strat, ttlOpts: to, mode: mode}
+	shard.regs[key] = &registration{ttlStrategy: strat, ttlOpts: to, mode: mode}
 	return true
 }
 
 // Unregister removes a key registration.
 func (w *Warp[T]) Unregister(key string) {
-	w.mu.Lock()
-	delete(w.regs, key)
-	w.mu.Unlock()
+	shard := w.shard(key)
+	shard.Lock()
+	delete(shard.regs, key)
+	shard.Unlock()
 }
 
 // ErrNotFound is returned when a key does not exist in the cache.
@@ -182,9 +208,10 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 			w.latencyHist.Observe(time.Since(start).Seconds())
 		}
 	}()
-	w.mu.RLock()
-	reg, ok := w.regs[key]
-	w.mu.RUnlock()
+	shard := w.shard(key)
+	shard.RLock()
+	reg, ok := shard.regs[key]
+	shard.RUnlock()
 	if !ok {
 		var zero T
 		return zero, ErrUnregistered
@@ -258,9 +285,10 @@ func (w *Warp[T]) GetAt(ctx context.Context, key string, at time.Time) (T, error
 			w.latencyHist.Observe(time.Since(start).Seconds())
 		}
 	}()
-	w.mu.RLock()
-	reg, ok := w.regs[key]
-	w.mu.RUnlock()
+	shard := w.shard(key)
+	shard.RLock()
+	reg, ok := shard.regs[key]
+	shard.RUnlock()
 	if !ok {
 		var zero T
 		return zero, ErrUnregistered
@@ -304,9 +332,10 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 			w.latencyHist.Observe(time.Since(start).Seconds())
 		}
 	}()
-	w.mu.RLock()
-	reg, ok := w.regs[key]
-	w.mu.RUnlock()
+	shard := w.shard(key)
+	shard.RLock()
+	reg, ok := shard.regs[key]
+	shard.RUnlock()
 	if !ok {
 		return ErrUnregistered
 	}
@@ -362,9 +391,10 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 			w.latencyHist.Observe(time.Since(start).Seconds())
 		}
 	}()
-	w.mu.RLock()
-	reg, ok := w.regs[key]
-	w.mu.RUnlock()
+	shard := w.shard(key)
+	shard.RLock()
+	reg, ok := shard.regs[key]
+	shard.RUnlock()
 	if !ok {
 		return ErrUnregistered
 	}
@@ -392,12 +422,15 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 	if w.store == nil {
 		return
 	}
-	w.mu.RLock()
-	keys := make([]string, 0, len(w.regs))
-	for k := range w.regs {
-		keys = append(keys, k)
+	keys := make([]string, 0)
+	for i := 0; i < regShardCount; i++ {
+		shard := &w.shards[i]
+		shard.RLock()
+		for k := range shard.regs {
+			keys = append(keys, k)
+		}
+		shard.RUnlock()
 	}
-	w.mu.RUnlock()
 	for _, k := range keys {
 		select {
 		case <-ctx.Done():
@@ -408,9 +441,10 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 		if err != nil || !ok {
 			continue
 		}
-		w.mu.RLock()
-		reg := w.regs[k]
-		w.mu.RUnlock()
+		shard := w.shard(k)
+		shard.RLock()
+		reg := shard.regs[k]
+		shard.RUnlock()
 		now := time.Now()
 		mv := merge.Value[T]{Data: v, Timestamp: now}
 		ttl := reg.ttl
@@ -494,9 +528,10 @@ func (t *Txn[T]) Commit() error {
 	}
 
 	for key, val := range t.sets {
-		t.w.mu.RLock()
-		reg, ok := t.w.regs[key]
-		t.w.mu.RUnlock()
+		shard := t.w.shard(key)
+		shard.RLock()
+		reg, ok := shard.regs[key]
+		shard.RUnlock()
 		if !ok {
 			return ErrUnregistered
 		}
@@ -552,9 +587,10 @@ func (t *Txn[T]) Commit() error {
 
 	for key := range t.deletes {
 		metrics.InvalidateCounter.Inc()
-		t.w.mu.RLock()
-		reg, ok := t.w.regs[key]
-		t.w.mu.RUnlock()
+		shard := t.w.shard(key)
+		shard.RLock()
+		reg, ok := shard.regs[key]
+		shard.RUnlock()
 		if !ok {
 			return ErrUnregistered
 		}
@@ -604,9 +640,10 @@ func (vc validatorCache[T]) Get(ctx context.Context, key string) (T, bool, error
 func (vc validatorCache[T]) Set(ctx context.Context, key string, value T, _ time.Duration) error {
 	now := time.Now()
 	mv := merge.Value[T]{Data: value, Timestamp: now}
-	vc.w.mu.RLock()
-	reg, ok := vc.w.regs[key]
-	vc.w.mu.RUnlock()
+	shard := vc.w.shard(key)
+	shard.RLock()
+	reg, ok := shard.regs[key]
+	shard.RUnlock()
 	var ttl time.Duration
 	if ok {
 		ttl = reg.ttl

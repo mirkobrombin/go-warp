@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -279,11 +280,11 @@ func TestWarpWarmupContextCancel(t *testing.T) {
 func TestWarpUnregister(t *testing.T) {
 	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, nil, merge.NewEngine[string]())
 	w.Register("foo", ModeStrongLocal, time.Minute)
-	if _, ok := w.regs["foo"]; !ok {
+	if _, ok := w.getReg("foo"); !ok {
 		t.Fatalf("expected foo to be registered")
 	}
 	w.Unregister("foo")
-	if _, ok := w.regs["foo"]; ok {
+	if _, ok := w.getReg("foo"); ok {
 		t.Fatalf("expected foo to be unregistered")
 	}
 }
@@ -306,7 +307,7 @@ func TestWarpRegisterDuplicate(t *testing.T) {
 	if w.Register("foo", ModeEventualDistributed, 2*time.Minute) {
 		t.Fatalf("expected duplicate registration to fail")
 	}
-	reg := w.regs["foo"]
+	reg, _ := w.getReg("foo")
 	if reg.mode != ModeStrongLocal || reg.ttl != time.Minute {
 		t.Fatalf("registration should not be overwritten")
 	}
@@ -413,4 +414,32 @@ func TestWarpTxnCASMismatch(t *testing.T) {
 	if err := txn.Commit(); !errors.Is(err, ErrCASMismatch) {
 		t.Fatalf("expected ErrCASMismatch got %v", err)
 	}
+}
+
+func TestConcurrentRegisterGetSet(t *testing.T) {
+	ctx := context.Background()
+	w := New[string](cache.NewInMemory[merge.Value[string]](), nil, syncbus.NewInMemoryBus(), merge.NewEngine[string]())
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			key := fmt.Sprintf("k%d", i)
+			if !w.Register(key, ModeStrongLocal, time.Minute) {
+				t.Errorf("register failed for %s", key)
+				return
+			}
+			val := fmt.Sprintf("v%d", i)
+			if err := w.Set(ctx, key, val); err != nil {
+				t.Errorf("set failed for %s: %v", key, err)
+				return
+			}
+			if got, err := w.Get(ctx, key); err != nil || got != val {
+				t.Errorf("get failed for %s: %v %v", key, got, err)
+			}
+		}()
+	}
+	wg.Wait()
 }
