@@ -2,12 +2,15 @@ package syncbus
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
+
+	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
 )
 
 func newRedisBus(t *testing.T) (*RedisBus, context.Context) {
@@ -172,5 +175,15 @@ func TestRedisBusIdempotentAfterReconnect(t *testing.T) {
 	case <-ch:
 		t.Fatal("duplicate delivered")
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestRedisBusTimeout(t *testing.T) {
+	bus, ctx := newRedisBus(t)
+	tCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond)
+	if err := bus.Publish(tCtx, "key"); !errors.Is(err, warperrors.ErrTimeout) {
+		t.Fatalf("expected timeout error, got %v", err)
 	}
 }

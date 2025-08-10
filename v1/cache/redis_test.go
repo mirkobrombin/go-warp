@@ -2,12 +2,15 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
+
+	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
 )
 
 // newRedisCache returns a Redis-backed cache and context for testing.
@@ -79,8 +82,8 @@ func TestRedisCacheGetErrors(t *testing.T) {
 	t.Run("client error", func(t *testing.T) {
 		c, ctx := newRedisCache[string](t)
 		_ = c.client.Close()
-		if _, _, err := c.Get(ctx, "foo"); err == nil {
-			t.Fatalf("expected error from closed client")
+		if _, _, err := c.Get(ctx, "foo"); !errors.Is(err, warperrors.ErrConnectionClosed) {
+			t.Fatalf("expected connection closed error, got %v", err)
 		}
 	})
 
@@ -92,6 +95,16 @@ func TestRedisCacheGetErrors(t *testing.T) {
 		}
 		if _, _, err := c.Get(ctx, "foo"); err == nil {
 			t.Fatalf("expected unmarshal error")
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		c, ctx := newRedisCache[string](t)
+		tCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
+		defer cancel()
+		time.Sleep(time.Millisecond)
+		if _, _, err := c.Get(tCtx, "foo"); !errors.Is(err, warperrors.ErrTimeout) {
+			t.Fatalf("expected timeout error, got %v", err)
 		}
 	})
 }

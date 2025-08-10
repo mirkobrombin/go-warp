@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/adapter"
 	"github.com/mirkobrombin/go-warp/v1/cache"
 	"github.com/mirkobrombin/go-warp/v1/core"
+	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
 	"github.com/mirkobrombin/go-warp/v1/merge"
 )
 
@@ -134,4 +136,25 @@ func TestRedisStoreBatchCommitError(t *testing.T) {
 	if err := b.Commit(ctx); err == nil {
 		t.Fatalf("expected commit error")
 	}
+}
+
+func TestRedisStoreSentinelErrors(t *testing.T) {
+	t.Run("connection closed", func(t *testing.T) {
+		s, ctx, _, client := newRedisStoreWithServer[string](t)
+		_ = s.Set(ctx, "foo", "bar")
+		_ = client.Close()
+		if _, _, err := s.Get(ctx, "foo"); !errors.Is(err, warperrors.ErrConnectionClosed) {
+			t.Fatalf("expected connection closed, got %v", err)
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		s, ctx := newRedisStore[string](t)
+		tCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
+		defer cancel()
+		time.Sleep(time.Millisecond)
+		if _, _, err := s.Get(tCtx, "foo"); !errors.Is(err, warperrors.ErrTimeout) {
+			t.Fatalf("expected timeout, got %v", err)
+		}
+	})
 }

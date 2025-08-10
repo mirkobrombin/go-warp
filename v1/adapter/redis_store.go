@@ -3,9 +3,15 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	stdErrors "errors"
+	"time"
 
 	redis "github.com/redis/go-redis/v9"
+
+	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
 )
+
+const redisOpTimeout = 5 * time.Second
 
 // RedisStore implements Store using a Redis backend.
 type RedisStore[T any] struct {
@@ -20,11 +26,31 @@ func NewRedisStore[T any](client *redis.Client) *RedisStore[T] {
 // Get implements Store.Get.
 func (s *RedisStore[T]) Get(ctx context.Context, key string) (T, bool, error) {
 	var zero T
-	data, err := s.client.Get(ctx, key).Bytes()
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return zero, false, warperrors.ErrTimeout
+		}
+		return zero, false, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	defer cancel()
+	data, err := s.client.Get(cctx, key).Bytes()
 	if err == redis.Nil {
 		return zero, false, nil
 	}
 	if err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return zero, false, warperrors.ErrTimeout
+		}
+		if stdErrors.Is(err, redis.ErrClosed) {
+			return zero, false, warperrors.ErrConnectionClosed
+		}
+		return zero, false, err
+	}
+	if err := cctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return zero, false, warperrors.ErrTimeout
+		}
 		return zero, false, err
 	}
 	var v T
@@ -36,20 +62,51 @@ func (s *RedisStore[T]) Get(ctx context.Context, key string) (T, bool, error) {
 
 // Set implements Store.Set.
 func (s *RedisStore[T]) Set(ctx context.Context, key string, value T) error {
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		return err
+	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	return s.client.Set(ctx, key, data, 0).Err()
+	cctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	defer cancel()
+	if err := s.client.Set(cctx, key, data, 0).Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		if stdErrors.Is(err, redis.ErrClosed) {
+			return warperrors.ErrConnectionClosed
+		}
+		return err
+	}
+	return nil
 }
 
 // Keys implements Store.Keys using SCAN to iterate over keys.
 func (s *RedisStore[T]) Keys(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return nil, warperrors.ErrTimeout
+		}
+		return nil, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	defer cancel()
 	var cursor uint64
 	var keys []string
 	for {
-		batch, next, err := s.client.Scan(ctx, cursor, "*", 100).Result()
+		batch, next, err := s.client.Scan(cctx, cursor, "*", 100).Result()
 		if err != nil {
+			if stdErrors.Is(err, context.DeadlineExceeded) {
+				return nil, warperrors.ErrTimeout
+			}
+			if stdErrors.Is(err, redis.ErrClosed) {
+				return nil, warperrors.ErrConnectionClosed
+			}
 			return nil, err
 		}
 		keys = append(keys, batch...)
@@ -57,6 +114,12 @@ func (s *RedisStore[T]) Keys(ctx context.Context) ([]string, error) {
 			break
 		}
 		cursor = next
+	}
+	if err := cctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return nil, warperrors.ErrTimeout
+		}
+		return nil, err
 	}
 	return keys, nil
 }
@@ -83,17 +146,34 @@ func (b *redisBatch[T]) Delete(ctx context.Context, key string) error {
 }
 
 func (b *redisBatch[T]) Commit(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	defer cancel()
 	pipe := b.s.client.TxPipeline()
 	for k, v := range b.sets {
 		data, err := json.Marshal(v)
 		if err != nil {
 			return err
 		}
-		pipe.Set(ctx, k, data, 0)
+		pipe.Set(cctx, k, data, 0)
 	}
 	if len(b.deletes) > 0 {
-		pipe.Del(ctx, b.deletes...)
+		pipe.Del(cctx, b.deletes...)
 	}
-	_, err := pipe.Exec(ctx)
-	return err
+	_, err := pipe.Exec(cctx)
+	if err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		if stdErrors.Is(err, redis.ErrClosed) {
+			return warperrors.ErrConnectionClosed
+		}
+		return err
+	}
+	return nil
 }
