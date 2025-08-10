@@ -5,20 +5,35 @@ import (
 	"sync"
 )
 
+// prefixNode represents a node in the prefix trie used for prefix
+// subscriptions and prefix lookups for key watchers. Each node keeps the
+// watchers of keys that share its prefix as well as subscribers that have
+// explicitly subscribed to that prefix.
+type prefixNode struct {
+	subs     []chan []byte
+	watchers map[chan []byte]struct{}
+	children map[rune]*prefixNode
+}
+
+func newPrefixNode() *prefixNode {
+	return &prefixNode{
+		watchers: make(map[chan []byte]struct{}),
+		children: make(map[rune]*prefixNode),
+	}
+}
+
 // InMemoryWatchBus is an in-memory implementation of WatchBus.
 type InMemoryWatchBus struct {
-	mu         sync.Mutex
-	subs       map[string][]chan []byte
-	prefixSubs map[string][]chan []byte
-	index      map[string]map[chan []byte]struct{}
+	mu   sync.RWMutex
+	subs map[string][]chan []byte
+	root *prefixNode
 }
 
 // NewInMemory creates a new InMemoryWatchBus.
 func NewInMemory() *InMemoryWatchBus {
 	return &InMemoryWatchBus{
-		subs:       make(map[string][]chan []byte),
-		prefixSubs: make(map[string][]chan []byte),
-		index:      make(map[string]map[chan []byte]struct{}),
+		subs: make(map[string][]chan []byte),
+		root: newPrefixNode(),
 	}
 }
 
@@ -31,17 +46,23 @@ func (b *InMemoryWatchBus) Publish(ctx context.Context, key string, data []byte)
 	}
 
 	targets := make(map[chan []byte]struct{})
-	b.mu.Lock()
+
+	b.mu.RLock()
 	for _, ch := range b.subs[key] {
 		targets[ch] = struct{}{}
 	}
-	for i := 1; i <= len(key); i++ {
-		p := key[:i]
-		for _, ch := range b.prefixSubs[p] {
+	node := b.root
+	for _, r := range key {
+		next, ok := node.children[r]
+		if !ok {
+			break
+		}
+		node = next
+		for _, ch := range node.subs {
 			targets[ch] = struct{}{}
 		}
 	}
-	b.mu.Unlock()
+	b.mu.RUnlock()
 
 	for ch := range targets {
 		select {
@@ -66,14 +87,26 @@ func (b *InMemoryWatchBus) PublishPrefix(ctx context.Context, prefix string, dat
 	}
 
 	targets := make(map[chan []byte]struct{})
-	b.mu.Lock()
-	for ch := range b.index[prefix] {
-		targets[ch] = struct{}{}
+
+	b.mu.RLock()
+	node := b.root
+	for _, r := range prefix {
+		next, ok := node.children[r]
+		if !ok {
+			node = nil
+			break
+		}
+		node = next
 	}
-	for _, ch := range b.prefixSubs[prefix] {
-		targets[ch] = struct{}{}
+	if node != nil {
+		for ch := range node.watchers {
+			targets[ch] = struct{}{}
+		}
+		for _, ch := range node.subs {
+			targets[ch] = struct{}{}
+		}
 	}
-	b.mu.Unlock()
+	b.mu.RUnlock()
 
 	for ch := range targets {
 		select {
@@ -100,16 +133,16 @@ func (b *InMemoryWatchBus) Watch(ctx context.Context, key string) (chan []byte, 
 	ch := make(chan []byte, 1)
 	b.mu.Lock()
 	b.subs[key] = append(b.subs[key], ch)
-	for i := 1; i <= len(key); i++ {
-		p := key[:i]
-		m := b.index[p]
-		if m == nil {
-			m = make(map[chan []byte]struct{})
-			b.index[p] = m
+	node := b.root
+	for _, r := range key {
+		if node.children[r] == nil {
+			node.children[r] = newPrefixNode()
 		}
-		m[ch] = struct{}{}
+		node = node.children[r]
+		node.watchers[ch] = struct{}{}
 	}
 	b.mu.Unlock()
+
 	go func() {
 		<-ctx.Done()
 		_ = b.Unwatch(context.Background(), key, ch)
@@ -127,8 +160,16 @@ func (b *InMemoryWatchBus) SubscribePrefix(ctx context.Context, prefix string) (
 
 	ch := make(chan []byte, 1)
 	b.mu.Lock()
-	b.prefixSubs[prefix] = append(b.prefixSubs[prefix], ch)
+	node := b.root
+	for _, r := range prefix {
+		if node.children[r] == nil {
+			node.children[r] = newPrefixNode()
+		}
+		node = node.children[r]
+	}
+	node.subs = append(node.subs, ch)
 	b.mu.Unlock()
+
 	go func() {
 		<-ctx.Done()
 		_ = b.Unwatch(context.Background(), prefix, ch)
@@ -161,31 +202,39 @@ func (b *InMemoryWatchBus) Unwatch(ctx context.Context, key string, ch chan []by
 		if len(subs) == 0 {
 			delete(b.subs, key)
 		}
-		for i := 1; i <= len(key); i++ {
-			p := key[:i]
-			if m, ok := b.index[p]; ok {
-				delete(m, ch)
-				if len(m) == 0 {
-					delete(b.index, p)
-				}
+		node := b.root
+		for _, r := range key {
+			next, ok := node.children[r]
+			if !ok {
+				break
 			}
+			delete(next.watchers, ch)
+			node = next
 		}
 		b.mu.Unlock()
 		return nil
 	}
-	// try prefix subscriptions
-	subs = b.prefixSubs[key]
-	for i, c := range subs {
-		if c == ch {
-			subs[i] = subs[len(subs)-1]
-			subs = subs[:len(subs)-1]
-			b.prefixSubs[key] = subs
-			close(c)
+
+	node := b.root
+	for _, r := range key {
+		next, ok := node.children[r]
+		if !ok {
+			node = nil
 			break
 		}
+		node = next
 	}
-	if len(subs) == 0 {
-		delete(b.prefixSubs, key)
+	if node != nil {
+		subs := node.subs
+		for i, c := range subs {
+			if c == ch {
+				subs[i] = subs[len(subs)-1]
+				subs = subs[:len(subs)-1]
+				node.subs = subs
+				close(c)
+				break
+			}
+		}
 	}
 	b.mu.Unlock()
 	return nil
