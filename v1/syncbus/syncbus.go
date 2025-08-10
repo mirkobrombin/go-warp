@@ -2,8 +2,10 @@ package syncbus
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Bus provides a simple pub/sub mechanism used by warp to propagate
@@ -47,6 +49,18 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 	b.pending[key] = struct{}{}
 	chans := append([]chan struct{}(nil), b.subs[key]...)
 	b.mu.Unlock()
+
+	// random small delay to reduce publish bursts
+	if j := rand.Int63n(int64(10 * time.Millisecond)); j > 0 {
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			return ctx.Err()
+		case <-time.After(time.Duration(j)):
+		}
+	}
 
 	atomic.AddUint64(&b.published, 1)
 	for _, ch := range chans {
