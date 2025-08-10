@@ -14,4 +14,15 @@ if ok {
 }
 ```
 
+## NATS Lock
+
+```go
+nc, _ := nats.Connect(nats.DefaultURL)
+l := lock.NewInMemory(syncbus.NewNATSBus(nc))
+ok, _ := l.TryLock(ctx, "key", time.Second)
+if ok {
+    defer l.Release(ctx, "key")
+}
+```
+
 Locks can expire automatically using the TTL parameter.
