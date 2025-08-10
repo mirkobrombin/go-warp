@@ -50,6 +50,31 @@ w.Merge("counter", func(old, new int) (int, error) {
 })
 ```
 
+## Transactions
+
+Transactions batch multiple operations and apply them atomically. They can
+mix `Set`, `Delete` and CAS checks while still benefiting from custom merge
+functions:
+
+```go
+ctx := context.Background()
+w.Merge("counter", func(old, new int) (int, error) {
+    return old + new, nil
+})
+w.Merge("logs", func(old, new []string) ([]string, error) {
+    return append(old, new...), nil
+})
+txn := w.Txn(ctx)
+txn.Set("counter", 1)
+txn.Set("logs", []string{"start"})
+txn.Delete("obsolete")
+txn.Delete("temp")
+txn.CompareAndSwap("status", "draft", "live")
+if err := txn.Commit(); err != nil {
+    // handle error
+}
+```
+
 ## Warmup and Validation
 
 `Warmup` preloads registered keys from the storage adapter during boot. The `Validator` allows running background consistency checks:
