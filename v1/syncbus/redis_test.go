@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -97,14 +98,79 @@ func TestRedisBusDeduplicatePendingKeys(t *testing.T) {
 	}
 }
 
-func TestRedisBusPublishError(t *testing.T) {
+func TestRedisBusReconnectAfterClose(t *testing.T) {
 	bus, ctx := newRedisBus(t)
+	ch, err := bus.Subscribe(ctx, "key")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	_ = bus.client.Close()
-	if err := bus.Publish(ctx, "key"); err == nil {
-		t.Fatal("expected publish error")
+	if err := bus.Publish(ctx, "key"); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publish")
 	}
 	metrics := bus.Metrics()
-	if metrics.Published != 0 {
-		t.Fatalf("expected published 0 got %d", metrics.Published)
+	if metrics.Published != 1 {
+		t.Fatalf("expected published 1 got %d", metrics.Published)
+	}
+	if metrics.Delivered != 1 {
+		t.Fatalf("expected delivered 1 got %d", metrics.Delivered)
+	}
+}
+
+func TestRedisBusReconnectLoop(t *testing.T) {
+	bus, ctx := newRedisBus(t)
+	ch, err := bus.Subscribe(ctx, "key")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	_ = bus.client.Close()
+	done := make(chan error, 1)
+	go func() { done <- bus.Publish(ctx, "key") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("publish timeout")
+	}
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publish")
+	}
+}
+
+func TestRedisBusIdempotentAfterReconnect(t *testing.T) {
+	bus, ctx := newRedisBus(t)
+	ch, err := bus.Subscribe(ctx, "key")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	id := uuid.NewString()
+	if err := bus.client.Publish(ctx, "key", id).Err(); err != nil {
+		t.Fatalf("direct publish: %v", err)
+	}
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publish")
+	}
+	_ = bus.client.Close()
+	if err := bus.reconnect(); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if err := bus.client.Publish(ctx, "key", id).Err(); err != nil {
+		t.Fatalf("dup publish: %v", err)
+	}
+	select {
+	case <-ch:
+		t.Fatal("duplicate delivered")
+	case <-time.After(200 * time.Millisecond):
 	}
 }

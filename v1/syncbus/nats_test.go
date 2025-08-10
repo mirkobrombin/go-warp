@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	natsserver "github.com/nats-io/nats-server/v2/test"
 	nats "github.com/nats-io/nats.go"
 )
@@ -97,14 +98,79 @@ func TestNATSBusDeduplicatePendingKeys(t *testing.T) {
 	}
 }
 
-func TestNATSBusPublishError(t *testing.T) {
+func TestNATSBusReconnectAfterClose(t *testing.T) {
 	bus, ctx := newNATSBus(t)
+	ch, err := bus.Subscribe(ctx, "key")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 	bus.conn.Close()
-	if err := bus.Publish(ctx, "key"); err == nil {
-		t.Fatal("expected publish error")
+	if err := bus.Publish(ctx, "key"); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publish")
 	}
 	metrics := bus.Metrics()
-	if metrics.Published != 0 {
-		t.Fatalf("expected published 0 got %d", metrics.Published)
+	if metrics.Published != 1 {
+		t.Fatalf("expected published 1 got %d", metrics.Published)
+	}
+	if metrics.Delivered != 1 {
+		t.Fatalf("expected delivered 1 got %d", metrics.Delivered)
+	}
+}
+
+func TestNATSBusReconnectLoop(t *testing.T) {
+	bus, ctx := newNATSBus(t)
+	ch, err := bus.Subscribe(ctx, "key")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	bus.conn.Close()
+	done := make(chan error, 1)
+	go func() { done <- bus.Publish(ctx, "key") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("publish timeout")
+	}
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publish")
+	}
+}
+
+func TestNATSBusIdempotentAfterReconnect(t *testing.T) {
+	bus, ctx := newNATSBus(t)
+	ch, err := bus.Subscribe(ctx, "key")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	id := uuid.NewString()
+	if err := bus.conn.Publish("key", []byte(id)); err != nil {
+		t.Fatalf("direct publish: %v", err)
+	}
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for publish")
+	}
+	bus.conn.Close()
+	if err := bus.reconnect(); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	if err := bus.conn.Publish("key", []byte(id)); err != nil {
+		t.Fatalf("dup publish: %v", err)
+	}
+	select {
+	case <-ch:
+		t.Fatal("duplicate delivered")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
