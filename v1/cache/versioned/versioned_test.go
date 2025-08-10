@@ -72,3 +72,23 @@ func TestCacheInvalidate(t *testing.T) {
 		t.Fatal("expected key removed after invalidate")
 	}
 }
+
+func TestCacheGlobalEviction(t *testing.T) {
+	base := cache.NewInMemory[merge.VersionedValue[int]]()
+	c := New[int](base, 1, WithMaxEntries[int](1))
+	ctx := context.Background()
+	mv := merge.Value[int]{Data: 1, Timestamp: time.Now()}
+	if err := c.Set(ctx, "k1", mv, time.Minute); err != nil {
+		t.Fatalf("set k1: %v", err)
+	}
+	if err := c.Set(ctx, "k2", mv, time.Minute); err != nil {
+		t.Fatalf("set k2: %v", err)
+	}
+	if _, ok, _ := c.Get(ctx, "k1"); ok {
+		t.Fatal("expected k1 evicted due to max entries")
+	}
+	m := c.Metrics()
+	if m.Evictions != 1 {
+		t.Fatalf("expected 1 eviction got %d", m.Evictions)
+	}
+}

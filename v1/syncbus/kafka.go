@@ -2,8 +2,10 @@ package syncbus
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	sarama "github.com/IBM/sarama"
 )
@@ -61,6 +63,17 @@ func (b *KafkaBus) Publish(ctx context.Context, key string) error {
 	}
 	b.pending[key] = struct{}{}
 	b.mu.Unlock()
+
+	if j := rand.Int63n(int64(10 * time.Millisecond)); j > 0 {
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			return ctx.Err()
+		case <-time.After(time.Duration(j)):
+		}
+	}
 
 	msg := &sarama.ProducerMessage{Topic: key, Value: sarama.StringEncoder("1")}
 	if _, _, err := b.producer.SendMessage(msg); err != nil {
