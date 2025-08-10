@@ -20,7 +20,7 @@ import (
 
 var tracer = otel.Tracer("github.com/mirkobrombin/go-warp/v1/core")
 
-// Mode represents the consistency mode for a key.
+// Mode represents the consistency mode for a key. See docs/core.md for the full mode table.
 type Mode int
 
 const (
@@ -116,7 +116,7 @@ func New[T any](c cache.Cache[merge.Value[T]], s adapter.Store[T], bus syncbus.B
 	return w
 }
 
-// Register registers a key with a specific mode and TTL.
+// Register registers a key with a specific mode and TTL. Mode must be chosen from the table in docs/core.md.
 // Optional cache.TTLOption can enable sliding expiration or dynamic TTL
 // adjustments. It returns false if the key was already registered.
 func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration, opts ...cache.TTLOption) bool {
@@ -139,7 +139,7 @@ func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration, opts ...cac
 }
 
 // RegisterDynamicTTL registers a key with a consistency mode and a dynamic TTL
-// strategy. It returns false if the key was already registered.
+// strategy. Mode options are documented in docs/core.md. It returns false if the key was already registered.
 func (w *Warp[T]) RegisterDynamicTTL(key string, mode Mode, strat cache.TTLStrategy, opts ...cache.TTLOption) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()

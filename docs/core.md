@@ -17,11 +17,15 @@ To remove a registration, call `Unregister`:
 w.Unregister("greeting")
 ```
 
-The available modes are:
+The available modes are summarized below:
 
-- `ModeStrongLocal` – data is kept locally with optional fallback to the store.
-- `ModeEventualDistributed` – invalidations are propagated asynchronously via the sync bus.
-- `ModeStrongDistributed` – reserved for quorum based writes.
+| Mode | Behavior | Sync Bus | Store | Default |
+| ---- | -------- | -------- | ----- | ------- |
+| `ModeStrongLocal` | Data is kept locally with optional fallback to the store. | Not used | Optional | No |
+| `ModeEventualDistributed` | Invalidations are propagated asynchronously via the sync bus. | Required | Required | No |
+| `ModeStrongDistributed` | Reserved for quorum based writes. | Required | Required | No |
+
+There is no default mode; each key must explicitly choose one when registered.
 
 ## Basic Operations
 
