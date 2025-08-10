@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - bus: redis
+            services: |
+              {
+                "redis": {
+                  "image": "redis:7",
+                  "ports": ["6379:6379"]
+                },
+                "toxiproxy": {
+                  "image": "ghcr.io/shopify/toxiproxy:2.5.0",
+                  "ports": ["8474:8474", "6666:6666"]
+                }
+              }
+          - bus: nats
+            services: |
+              {
+                "nats": {
+                  "image": "nats:2",
+                  "ports": ["4222:4222"]
+                },
+                "toxiproxy": {
+                  "image": "ghcr.io/shopify/toxiproxy:2.5.0",
+                  "ports": ["8474:8474", "4223:4223"]
+                }
+              }
+          - bus: http
+            services: |
+              {
+                "toxiproxy": {
+                  "image": "ghcr.io/shopify/toxiproxy:2.5.0",
+                  "ports": ["8474:8474"]
+                }
+              }
+    services: ${{ fromJSON(matrix.services) }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+      - name: Install toxiproxy-cli
+        run: |
+          curl -sL https://github.com/Shopify/toxiproxy/releases/download/v2.5.0/toxiproxy-cli-linux-amd64 -o toxiproxy-cli
+          sudo mv toxiproxy-cli /usr/local/bin/toxiproxy-cli
+          sudo chmod +x /usr/local/bin/toxiproxy-cli
+      - name: Configure proxies
+        env:
+          TOXIPROXY_HOST: localhost:8474
+        run: |
+          if [ "${{ matrix.bus }}" = "redis" ]; then
+            until nc -z redis 6379; do sleep 0.5; done
+            toxiproxy-cli create redis -l 0.0.0.0:6666 -u redis:6379
+            toxiproxy-cli toxic add redis -t latency -a latency=500 -a jitter=100
+            echo "REDIS_ADDR=127.0.0.1:6666" >> $GITHUB_ENV
+          elif [ "${{ matrix.bus }}" = "nats" ]; then
+            until nc -z nats 4222; do sleep 0.5; done
+            toxiproxy-cli create nats -l 0.0.0.0:4223 -u nats:4222
+            toxiproxy-cli toxic add nats -t latency -a latency=500 -a jitter=100
+            echo "NATS_URL=nats://127.0.0.1:4223" >> $GITHUB_ENV
+          else
+            echo "Using HTTP bus, no external service"
+          fi
+      - name: Run race tests
+        run: go test -race ./...
+      - name: Run benchmarks
+        run: go test -bench . -run ^$ ./...
