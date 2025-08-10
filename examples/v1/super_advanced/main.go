@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -36,17 +37,30 @@ func runWithoutWarp(ctx context.Context) (int, time.Duration, float64) {
 			defer wg.Done()
 			for j := 0; j < opsPerWorker; j++ {
 				mu.Lock()
-				v, ok, _ := store.Get(ctx, "counter")
+				v, ok, err := store.Get(ctx, "counter")
+				if err != nil {
+					log.Printf("store.Get error: %v", err)
+					mu.Unlock()
+					return
+				}
 				if !ok {
 					v = 0
 				}
-				_ = store.Set(ctx, "counter", v+1)
+				if err := store.Set(ctx, "counter", v+1); err != nil {
+					log.Printf("store.Set error: %v", err)
+					mu.Unlock()
+					return
+				}
 				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
-	val, _, _ := store.Get(ctx, "counter")
+	val, _, err := store.Get(ctx, "counter")
+	if err != nil {
+		log.Printf("store.Get error: %v", err)
+		return 0, 0, 0
+	}
 	elapsed := time.Since(start)
 	throughput := float64(opsPerWorker*workerCount) / elapsed.Seconds()
 	fmt.Printf("runWithoutWarp took %s, throughput %.2f ops/s\n", elapsed, throughput)
@@ -78,7 +92,11 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 
 	// warmup and lease
 	w.Warmup(ctx)
-	leaseID, _ := w.GrantLease(ctx, time.Second)
+	leaseID, err := w.GrantLease(ctx, time.Second)
+	if err != nil {
+		log.Printf("GrantLease error: %v", err)
+		return 0, 0, 0
+	}
 	w.AttachKey(leaseID, "counter")
 
 	// validator
@@ -88,7 +106,13 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 
 	// watch bus
 	watchCtx, cancelWatch := context.WithCancel(ctx)
-	watchCh, _ := core.WatchPrefix(watchCtx, wb, "event")
+	watchCh, err := core.WatchPrefix(watchCtx, wb, "event")
+	if err != nil {
+		log.Printf("WatchPrefix error: %v", err)
+		cancelWatch()
+		cancelValidator()
+		return 0, 0, 0
+	}
 	go func() {
 		for msg := range watchCh {
 			fmt.Println("watch:", string(msg))
@@ -97,7 +121,12 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 
 	// lock
 	locker := lock.NewInMemory(bus)
-	_ = locker.Acquire(ctx, "counter", 0)
+	if err := locker.Acquire(ctx, "counter", 0); err != nil {
+		log.Printf("locker.Acquire error: %v", err)
+		cancelWatch()
+		cancelValidator()
+		return 0, 0, 0
+	}
 
 	// stress with Txn
 	var wg sync.WaitGroup
@@ -109,33 +138,58 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 				txn := w.Txn(ctx)
 				txn.Set("counter", 1)
 				txn.CompareAndSwap("hot", 0, 1) // no-op but exercises CAS
-				_ = txn.Commit()
+				if err := txn.Commit(); err != nil {
+					log.Printf("txn.Commit error: %v", err)
+					return
+				}
 			}
 		}()
 	}
 	wg.Wait()
-	_ = locker.Release(ctx, "counter")
+	if err := locker.Release(ctx, "counter"); err != nil {
+		log.Printf("locker.Release error: %v", err)
+	}
 
-	wb.Publish(ctx, "event/warp", []byte("done"))
+	if err := wb.Publish(ctx, "event/warp", []byte("done")); err != nil {
+		log.Printf("wb.Publish error: %v", err)
+	}
 
-	val, _ := w.Get(ctx, "counter")
-	past, _ := w.GetAt(ctx, "counter", time.Now().Add(-time.Millisecond))
+	val, err := w.Get(ctx, "counter")
+	if err != nil {
+		log.Printf("w.Get error: %v", err)
+		cancelWatch()
+		cancelValidator()
+		return 0, 0, 0
+	}
+	past, err := w.GetAt(ctx, "counter", time.Now().Add(-time.Millisecond))
+	if err != nil {
+		log.Printf("w.GetAt error: %v", err)
+		cancelWatch()
+		cancelValidator()
+		return 0, 0, 0
+	}
 	fmt.Println("current:", val, "past:", past)
 
-	_ = w.Invalidate(ctx, "counter")
+	if err := w.Invalidate(ctx, "counter"); err != nil {
+		log.Printf("w.Invalidate error: %v", err)
+	}
 	w.RevokeLease(ctx, leaseID)
 	w.Unregister("counter")
 	cancelWatch()
 	cancelValidator()
 
 	// expose metrics
-	mfs, _ := reg.Gather()
-	for _, mf := range mfs {
-		for _, m := range mf.Metric {
-			if m.Counter != nil {
-				fmt.Printf("metric %s %f\n", mf.GetName(), m.GetCounter().GetValue())
-			} else if m.Gauge != nil {
-				fmt.Printf("metric %s %f\n", mf.GetName(), m.GetGauge().GetValue())
+	mfs, err := reg.Gather()
+	if err != nil {
+		log.Printf("reg.Gather error: %v", err)
+	} else {
+		for _, mf := range mfs {
+			for _, m := range mf.Metric {
+				if m.Counter != nil {
+					fmt.Printf("metric %s %f\n", mf.GetName(), m.GetCounter().GetValue())
+				} else if m.Gauge != nil {
+					fmt.Printf("metric %s %f\n", mf.GetName(), m.GetGauge().GetValue())
+				}
 			}
 		}
 	}
