@@ -25,7 +25,8 @@ const (
 	opsPerWorker = 500
 )
 
-func runWithoutWarp(ctx context.Context) int {
+func runWithoutWarp(ctx context.Context) (int, time.Duration, float64) {
+	start := time.Now()
 	store := adapter.NewInMemoryStore[int]()
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -46,10 +47,14 @@ func runWithoutWarp(ctx context.Context) int {
 	}
 	wg.Wait()
 	val, _, _ := store.Get(ctx, "counter")
-	return val
+	elapsed := time.Since(start)
+	throughput := float64(opsPerWorker*workerCount) / elapsed.Seconds()
+	fmt.Printf("runWithoutWarp took %s, throughput %.2f ops/s\n", elapsed, throughput)
+	return val, elapsed, throughput
 }
 
-func runWithWarp(ctx context.Context) int {
+func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
+	start := time.Now()
 	reg := metrics.NewRegistry()
 	metrics.RegisterCoreMetrics(reg)
 
@@ -135,13 +140,22 @@ func runWithWarp(ctx context.Context) int {
 		}
 	}
 
-	return val
+	elapsed := time.Since(start)
+	throughput := float64(opsPerWorker*workerCount) / elapsed.Seconds()
+	fmt.Printf("runWithWarp took %s, throughput %.2f ops/s\n", elapsed, throughput)
+
+	return val, elapsed, throughput
 }
 
 func main() {
 	ctx := context.Background()
-	without := runWithoutWarp(ctx)
-	with := runWithWarp(ctx)
-	fmt.Println("without warp:", without)
-	fmt.Println("with warp:", with)
+	withoutVal, withoutElapsed, withoutThroughput := runWithoutWarp(ctx)
+	withVal, withElapsed, withThroughput := runWithWarp(ctx)
+	fmt.Println("without warp:", withoutVal)
+	fmt.Println("with warp:", withVal)
+	fmt.Printf("time: without %s vs with %s\n", withoutElapsed, withElapsed)
+	fmt.Printf("throughput: without %.2f ops/s vs with %.2f ops/s\n", withoutThroughput, withThroughput)
+	if withElapsed < withoutElapsed {
+		fmt.Printf("warp speedup: %.2fx faster, throughput gain: %.2fx\n", withoutElapsed.Seconds()/withElapsed.Seconds(), withThroughput/withoutThroughput)
+	}
 }
