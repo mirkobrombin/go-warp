@@ -60,13 +60,13 @@ jobs:
           TOXIPROXY_HOST: localhost:8474
         run: |
           if [ "${{ matrix.bus }}" = "redis" ]; then
-            until nc -z redis 6379; do sleep 0.5; done
-            toxiproxy-cli create redis -l 0.0.0.0:6666 -u redis:6379
+            until nc -z localhost 6379; do sleep 0.5; done
+            toxiproxy-cli create redis -l 0.0.0.0:6666 -u localhost:6379
             toxiproxy-cli toxic add redis -t latency -a latency=500 -a jitter=100
             echo "REDIS_ADDR=127.0.0.1:6666" >> $GITHUB_ENV
           elif [ "${{ matrix.bus }}" = "nats" ]; then
-            until nc -z nats 4222; do sleep 0.5; done
-            toxiproxy-cli create nats -l 0.0.0.0:4223 -u nats:4222
+            until nc -z localhost 4222; do sleep 0.5; done
+            toxiproxy-cli create nats -l 0.0.0.0:4223 -u localhost:4222
             toxiproxy-cli toxic add nats -t latency -a latency=500 -a jitter=100
             echo "NATS_URL=nats://127.0.0.1:4223" >> $GITHUB_ENV
           else
