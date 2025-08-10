@@ -5,6 +5,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"reflect"
+	"runtime"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"golang.org/x/sync/errgroup"
 )
 
 var tracer = otel.Tracer("github.com/mirkobrombin/go-warp/v1/core")
@@ -449,29 +451,60 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 		}
 		shard.RUnlock()
 	}
+
+	type res struct {
+		key string
+		val T
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	sem := make(chan struct{}, runtime.NumCPU())
+	ch := make(chan res, len(keys))
+
 	for _, k := range keys {
-		select {
-		case <-ctx.Done():
-			return
-		default:
+		k := k
+		g.Go(func() error {
+			select {
+			case sem <- struct{}{}:
+			case <-gctx.Done():
+				return gctx.Err()
+			}
+			defer func() { <-sem }()
+			v, ok, err := w.store.Get(gctx, k)
+			if err != nil || !ok {
+				return nil
+			}
+			select {
+			case <-gctx.Done():
+				return gctx.Err()
+			case ch <- res{key: k, val: v}:
+				return nil
+			}
+		})
+	}
+
+	go func() {
+		_ = g.Wait()
+		close(ch)
+	}()
+
+	for r := range ch {
+		if gctx.Err() != nil {
+			break
 		}
-		v, ok, err := w.store.Get(ctx, k)
-		if err != nil || !ok {
-			continue
-		}
-		shard := w.shard(k)
+		shard := w.shard(r.key)
 		shard.RLock()
-		reg := shard.regs[k]
+		reg := shard.regs[r.key]
 		shard.RUnlock()
 		now := time.Now()
-		mv := merge.Value[T]{Data: v, Timestamp: now}
+		mv := merge.Value[T]{Data: r.val, Timestamp: now}
 		ttl := reg.ttl
 		if reg.ttlStrategy != nil {
-			ttl = reg.ttlStrategy.TTL(k)
+			ttl = reg.ttlStrategy.TTL(r.key)
 		}
 		reg.currentTTL = ttl
 		reg.lastAccess = now
-		_ = w.cache.Set(ctx, k, mv, ttl)
+		_ = w.cache.Set(ctx, r.key, mv, ttl)
 	}
 }
 
