@@ -1,6 +1,6 @@
 # Warp Overview
 
-Warp is a data orchestration and synchronization layer designed for distributed backends. It sits between the application logic and the primary storage, offering fast access to hot data with configurable consistency modes, distributed invalidation, locking and leases, a watch bus for streaming updates, versioned caching, and built-in metrics.
+Warp is a data orchestration and synchronization layer designed for distributed backends. It sits between the application logic and the primary storage, offering fast access to hot data with configurable consistency modes, distributed invalidation, locking and leases, a watch bus for streaming updates, versioned caching, and built-in metrics. Start with the [Getting Started](getting-started.md) tutorial and consult the [Glossary](glossary.md) for terminology.
 
 Warp is composed of modular packages:
 
@@ -39,11 +39,11 @@ graph LR
     DB[(Primary Storage)]
 ```
 
-- **Buses** – Redis Pub/Sub or Streams, NATS, Kafka, or any transport implementing the `syncbus` interface can be used for
+- **Buses** – Redis Pub/Sub or Streams, [NATS](glossary.md#nats), [Kafka](glossary.md#kafka), or any transport implementing the `syncbus` interface can be used for
   distributed invalidation.
 - **Cache warmup** – call `Warmup` on startup to prefill hot keys via the storage adapter or schedule background warmup cycles.
 - **Validator modes** – run the validator in `ModeNoop` for metrics, `ModeAlert` for external monitoring, or `ModeAutoHeal` to
-  refresh stale cache entries automatically.
+  refresh stale cache entries automatically (see [Validator modes](glossary.md#validator-modes)).
 
 Refer to the README for a high level description and to the specific documents for detailed usage examples.
 
@@ -53,7 +53,7 @@ Refer to the README for a high level description and to the specific documents f
 
 A production setup runs Warp on every application node while relying on an external
 message bus and persistent storage shared across the fleet. Keep the bus
-clustered and highly available (Redis Streams, NATS, Kafka, …) and back it with a
+clustered and highly available (Redis Streams, [NATS](glossary.md#nats), [Kafka](glossary.md#kafka), …) and back it with a
 reliable data store such as PostgreSQL or another replicated database. Each Warp
 instance exposes a metrics endpoint and connects to the bus for invalidations and
 to storage for warmup and misses.

@@ -1,13 +1,13 @@
 # Warp
-Warp is a data orchestration and synchronization layer for distributed Go backends. It sits between your application and the primary storage, providing fast access to hot data with declarative consistency modes, pluggable caching and optional distributed invalidation.
+Warp is a data orchestration and synchronization layer for distributed Go backends. It sits between your application and the primary storage, providing fast access to hot data with declarative consistency modes, pluggable caching and optional distributed invalidation. See the [Getting Started](docs/getting-started.md) guide for a tutorial and the [Glossary](docs/glossary.md) for terminology.
 
 ## Features
 
 - **Configurable Consistency** – choose between strong local, eventual distributed and strong distributed modes per key.
 - **Pluggable Cache** – in-memory and Redis caches with TTL, warmup, metrics and
-  background eviction of expired items.
+  background eviction of expired items ([LRU](docs/glossary.md#lru), [LFU/TinyLFU](docs/glossary.md#lfu-tinylfu)).
 - **Storage Adapters** – abstract fallback storage for warmup and persistent writes.
-- **Sync Bus** – propagate invalidations across nodes through a pub/sub interface.
+- **Sync Bus** – propagate invalidations across nodes through a pub/sub interface (e.g. [NATS](docs/glossary.md#nats), [Kafka](docs/glossary.md#kafka)).
 - **Merge Engine** – resolve conflicts with last-write-wins or custom merge functions.
 - **Validator** – background process to detect and optionally heal cache/store mismatches.
 - [**Lock**](docs/lock.md) – distributed locking primitives built on the sync bus.
@@ -110,7 +110,7 @@ func main() {
 
 ## Documentation
 
-See the [docs](docs/overview.md) directory for detailed guides on each module, including [deployment architecture](docs/overview.md#deployment).
+See the [docs](docs/overview.md) directory for detailed guides on each module, including [deployment architecture](docs/overview.md#deployment). Start with the [Getting Started](docs/getting-started.md) tutorial and refer to the [Glossary](docs/glossary.md) for terminology.
 
 ## License
 

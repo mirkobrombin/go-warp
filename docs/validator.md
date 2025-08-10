@@ -2,7 +2,7 @@
 
 The `validator` package runs background scans to compare cache entries with the primary storage.
 
-## Modes
+## [Modes](glossary.md#validator-modes)
 
 - `ModeNoop` – only records mismatches.
 - `ModeAlert` – suitable for logging or external alerting.

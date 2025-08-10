@@ -1,4 +1,4 @@
-# Leases
+# [Leases](glossary.md#leases)
 
 Warp includes a simple lease manager that allows grouping keys under a
 revocable lease. Leases are renewed periodically until explicitly
@@ -17,7 +17,7 @@ if err != nil {
 
 Keys can be associated with a lease. When the lease is revoked the keys
 are invalidated locally and the revocation is propagated through the
-`syncbus`.
+[syncbus](syncbus.md).
 
 ```go
 w.AttachKey(id, "example")
