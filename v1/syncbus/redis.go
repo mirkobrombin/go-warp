@@ -2,9 +2,12 @@ package syncbus
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -19,6 +22,7 @@ type RedisBus struct {
 	mu        sync.Mutex
 	subs      map[string]*redisSubscription
 	pending   map[string]struct{}
+	processed map[string]struct{}
 	published uint64
 	delivered uint64
 }
@@ -26,9 +30,10 @@ type RedisBus struct {
 // NewRedisBus returns a new RedisBus using the provided Redis client.
 func NewRedisBus(client *redis.Client) *RedisBus {
 	return &RedisBus{
-		client:  client,
-		subs:    make(map[string]*redisSubscription),
-		pending: make(map[string]struct{}),
+		client:    client,
+		subs:      make(map[string]*redisSubscription),
+		pending:   make(map[string]struct{}),
+		processed: make(map[string]struct{}),
 	}
 }
 
@@ -42,30 +47,80 @@ func (b *RedisBus) Publish(ctx context.Context, key string) error {
 	b.pending[key] = struct{}{}
 	b.mu.Unlock()
 
-	err := b.client.Publish(ctx, key, "1").Err()
-	if err == nil {
-		atomic.AddUint64(&b.published, 1)
+	id := uuid.NewString()
+	backoff := 100 * time.Millisecond
+	var err error
+	for {
+		err = b.client.Publish(ctx, key, id).Err()
+		if err == nil {
+			atomic.AddUint64(&b.published, 1)
+			break
+		}
+		_ = b.reconnect()
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			return ctx.Err()
+		default:
+		}
+		jitter := time.Duration(rand.Int63n(int64(backoff)))
+		time.Sleep(backoff + jitter)
+		if backoff < time.Second {
+			backoff *= 2
+			if backoff > time.Second {
+				backoff = time.Second
+			}
+		}
 	}
 
-	b.mu.Lock()
-	delete(b.pending, key)
-	b.mu.Unlock()
+	time.AfterFunc(time.Millisecond, func() {
+		b.mu.Lock()
+		delete(b.pending, key)
+		b.mu.Unlock()
+	})
 	return err
 }
 
 // Subscribe implements Bus.Subscribe.
 func (b *RedisBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
 	ch := make(chan struct{}, 1)
-	b.mu.Lock()
-	sub, ok := b.subs[key]
-	if !ok {
+	backoff := 100 * time.Millisecond
+	for {
+		b.mu.Lock()
+		sub, ok := b.subs[key]
+		if ok {
+			sub.chans = append(sub.chans, ch)
+			b.mu.Unlock()
+			break
+		}
+		b.mu.Unlock()
 		ps := b.client.Subscribe(ctx, key)
-		sub = &redisSubscription{pubsub: ps}
-		b.subs[key] = sub
-		go b.dispatch(sub)
+		if _, err := ps.Receive(ctx); err == nil {
+			b.mu.Lock()
+			sub = &redisSubscription{pubsub: ps, chans: []chan struct{}{ch}}
+			b.subs[key] = sub
+			b.mu.Unlock()
+			go b.dispatch(key, sub)
+			break
+		}
+		_ = ps.Close()
+		_ = b.reconnect()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		jitter := time.Duration(rand.Int63n(int64(backoff)))
+		time.Sleep(backoff + jitter)
+		if backoff < time.Second {
+			backoff *= 2
+			if backoff > time.Second {
+				backoff = time.Second
+			}
+		}
 	}
-	sub.chans = append(sub.chans, ch)
-	b.mu.Unlock()
 
 	go func() {
 		<-ctx.Done()
@@ -74,9 +129,15 @@ func (b *RedisBus) Subscribe(ctx context.Context, key string) (chan struct{}, er
 	return ch, nil
 }
 
-func (b *RedisBus) dispatch(sub *redisSubscription) {
-	for range sub.pubsub.Channel() {
+func (b *RedisBus) dispatch(key string, sub *redisSubscription) {
+	for msg := range sub.pubsub.Channel() {
+		id := msg.Payload
 		b.mu.Lock()
+		if _, ok := b.processed[id]; ok {
+			b.mu.Unlock()
+			continue
+		}
+		b.processed[id] = struct{}{}
 		chans := append([]chan struct{}(nil), sub.chans...)
 		b.mu.Unlock()
 		for _, ch := range chans {
@@ -136,4 +197,22 @@ func (b *RedisBus) Metrics() Metrics {
 		Published: atomic.LoadUint64(&b.published),
 		Delivered: atomic.LoadUint64(&b.delivered),
 	}
+}
+
+func (b *RedisBus) reconnect() error {
+	if b.client != nil && b.client.Ping(context.Background()).Err() == nil {
+		return nil
+	}
+	opts := b.client.Options()
+	b.client = redis.NewClient(opts)
+	b.mu.Lock()
+	for key, sub := range b.subs {
+		_ = sub.pubsub.Close()
+		ps := b.client.Subscribe(context.Background(), key)
+		_, _ = ps.Receive(context.Background())
+		sub.pubsub = ps
+		go b.dispatch(key, sub)
+	}
+	b.mu.Unlock()
+	return nil
 }

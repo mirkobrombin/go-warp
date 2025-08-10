@@ -2,9 +2,12 @@ package syncbus
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	nats "github.com/nats-io/nats.go"
 )
 
@@ -19,6 +22,7 @@ type NATSBus struct {
 	mu        sync.Mutex
 	subs      map[string]*natsSubscription
 	pending   map[string]struct{}
+	processed map[string]struct{}
 	published uint64
 	delivered uint64
 }
@@ -26,9 +30,10 @@ type NATSBus struct {
 // NewNATSBus returns a new NATSBus using the provided connection.
 func NewNATSBus(conn *nats.Conn) *NATSBus {
 	return &NATSBus{
-		conn:    conn,
-		subs:    make(map[string]*natsSubscription),
-		pending: make(map[string]struct{}),
+		conn:      conn,
+		subs:      make(map[string]*natsSubscription),
+		pending:   make(map[string]struct{}),
+		processed: make(map[string]struct{}),
 	}
 }
 
@@ -42,44 +47,79 @@ func (b *NATSBus) Publish(ctx context.Context, key string) error {
 	b.pending[key] = struct{}{}
 	b.mu.Unlock()
 
-	err := b.conn.Publish(key, []byte("1"))
-	if err == nil {
-		atomic.AddUint64(&b.published, 1)
+	id := uuid.NewString()
+	backoff := 100 * time.Millisecond
+	var err error
+	for {
+		err = b.conn.Publish(key, []byte(id))
+		if err == nil {
+			atomic.AddUint64(&b.published, 1)
+			break
+		}
+		_ = b.reconnect()
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			return ctx.Err()
+		default:
+		}
+		jitter := time.Duration(rand.Int63n(int64(backoff)))
+		time.Sleep(backoff + jitter)
+		if backoff < time.Second {
+			backoff *= 2
+			if backoff > time.Second {
+				backoff = time.Second
+			}
+		}
 	}
 
-	b.mu.Lock()
-	delete(b.pending, key)
-	b.mu.Unlock()
+	time.AfterFunc(time.Millisecond, func() {
+		b.mu.Lock()
+		delete(b.pending, key)
+		b.mu.Unlock()
+	})
 	return err
 }
 
 // Subscribe implements Bus.Subscribe.
 func (b *NATSBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
 	ch := make(chan struct{}, 1)
-	b.mu.Lock()
-	sub := b.subs[key]
-	if sub == nil {
-		ns, err := b.conn.Subscribe(key, func(_ *nats.Msg) {
+	backoff := 100 * time.Millisecond
+
+	for {
+		b.mu.Lock()
+		sub := b.subs[key]
+		b.mu.Unlock()
+		if sub != nil {
 			b.mu.Lock()
-			chans := append([]chan struct{}(nil), b.subs[key].chans...)
+			sub.chans = append(sub.chans, ch)
 			b.mu.Unlock()
-			for _, c := range chans {
-				select {
-				case c <- struct{}{}:
-					atomic.AddUint64(&b.delivered, 1)
-				default:
-				}
-			}
-		})
-		if err != nil {
-			b.mu.Unlock()
-			return nil, err
+			break
 		}
-		sub = &natsSubscription{sub: ns}
-		b.subs[key] = sub
+		ns, err := b.conn.Subscribe(key, b.natsHandler(key))
+		if err == nil {
+			b.mu.Lock()
+			b.subs[key] = &natsSubscription{sub: ns, chans: []chan struct{}{ch}}
+			b.mu.Unlock()
+			break
+		}
+		_ = b.reconnect()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		jitter := time.Duration(rand.Int63n(int64(backoff)))
+		time.Sleep(backoff + jitter)
+		if backoff < time.Second {
+			backoff *= 2
+			if backoff > time.Second {
+				backoff = time.Second
+			}
+		}
 	}
-	sub.chans = append(sub.chans, ch)
-	b.mu.Unlock()
 
 	go func() {
 		<-ctx.Done()
@@ -134,4 +174,46 @@ func (b *NATSBus) Metrics() Metrics {
 		Published: atomic.LoadUint64(&b.published),
 		Delivered: atomic.LoadUint64(&b.delivered),
 	}
+}
+
+func (b *NATSBus) natsHandler(key string) nats.MsgHandler {
+	return func(m *nats.Msg) {
+		id := string(m.Data)
+		b.mu.Lock()
+		if _, ok := b.processed[id]; ok {
+			b.mu.Unlock()
+			return
+		}
+		b.processed[id] = struct{}{}
+		chans := append([]chan struct{}(nil), b.subs[key].chans...)
+		b.mu.Unlock()
+		for _, c := range chans {
+			select {
+			case c <- struct{}{}:
+				atomic.AddUint64(&b.delivered, 1)
+			default:
+			}
+		}
+	}
+}
+
+func (b *NATSBus) reconnect() error {
+	if b.conn != nil && b.conn.IsConnected() {
+		return nil
+	}
+	newConn, err := b.conn.Opts.Connect()
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	b.conn = newConn
+	for key, sub := range b.subs {
+		ns, err := b.conn.Subscribe(key, b.natsHandler(key))
+		if err != nil {
+			continue
+		}
+		sub.sub = ns
+	}
+	b.mu.Unlock()
+	return nil
 }

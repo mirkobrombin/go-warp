@@ -167,8 +167,8 @@ func TestWarpDistributedNATS(t *testing.T) {
 	wg.Wait()
 	time.Sleep(10 * time.Millisecond)
 	after := bus.Metrics()
-	if after.Published-before.Published != 2 {
-		t.Fatalf("expected 2 publishes, got %d", after.Published-before.Published)
+	if after.Published-before.Published != 1 {
+		t.Fatalf("expected 1 publish, got %d", after.Published-before.Published)
 	}
 
 	ev := testutil.ToFloat64(w1.evictionCounter) + testutil.ToFloat64(w2.evictionCounter)
