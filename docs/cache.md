@@ -14,7 +14,7 @@ type Cache[T any] interface {
 
 ## Strategies
 
-`cache.New` constructs an in-memory cache. By default it uses an LRU policy but a different strategy can be selected:
+`cache.New` constructs an in-memory cache. By default it uses an [LRU](glossary.md#lru) policy but a different strategy can be selected:
 
 ```go
 c := cache.New[string]()                                 // LRU
@@ -24,8 +24,8 @@ c := cache.New[string](cache.WithStrategy[string](cache.AdaptiveStrategy))
 
 The strategies are:
 
-* **LRU** – least recently used, implemented by `LRUCache`.
-* **LFU** – least frequently used, backed by the Ristretto library.
+* **[LRU](glossary.md#lru)** – least recently used, implemented by `LRUCache`.
+* **[LFU/TinyLFU](glossary.md#lfu-tinylfu)** – least frequently used, backed by the [Ristretto](glossary.md#ristretto) library.
 * **Adaptive** – dynamically switches between LRU and LFU based on the observed hit/miss ratio.
 
 ## LRU Cache
@@ -78,7 +78,7 @@ strategy that yields more hits. It can be created with:
 c := cache.New[string](cache.WithStrategy[string](cache.AdaptiveStrategy))
 ```
 
-## Sliding and Dynamic TTL
+## [Sliding and Dynamic TTL](glossary.md#sliding-ttl)
 
 `Warp.Register` accepts additional options from the `cache` package to control
 TTL behaviour. `WithSliding` resets the TTL every time a key is read, while

@@ -1,6 +1,6 @@
 # Sync Bus
 
-The `syncbus` package provides a pluggable mechanism to propagate invalidations across nodes.
+The `syncbus` package provides a pluggable mechanism to propagate invalidations across nodes (see [Sync Bus](glossary.md#sync-bus)).
 
 ## Bus Interface
 
@@ -29,7 +29,7 @@ _ = bus.Publish(ctx, "greeting")
 metrics := bus.Metrics() // Published, Delivered
 ```
 
-## NATS Bus
+## [NATS Bus](glossary.md#nats)
 
 `NATSBus` uses [NATS](https://nats.io/) subjects (one per key) to propagate events:
 
@@ -42,7 +42,7 @@ go func() { for range ch { fmt.Println("invalidated") } }()
 _ = bus.Publish(ctx, "greeting")
 ```
 
-## Kafka Bus
+## [Kafka Bus](glossary.md#kafka)
 
 `KafkaBus` publishes to Kafka topics named after each key and consumes from partition 0:
 
