@@ -68,6 +68,8 @@ func runWithoutWarp(ctx context.Context) (int, time.Duration, float64) {
 }
 
 func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
+	// ctx should be derived with context.WithCancel or context.WithTimeout so that
+	// all goroutines spawned in this function are canceled if main exits early.
 	start := time.Now()
 	reg := metrics.NewRegistry()
 	metrics.RegisterCoreMetrics(reg)
@@ -102,7 +104,6 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 	// validator
 	v := w.Validator(validator.ModeAutoHeal, 100*time.Millisecond)
 	vCtx, cancelValidator := context.WithCancel(ctx)
-	go v.Run(vCtx)
 
 	// watch bus
 	watchCtx, cancelWatch := context.WithCancel(ctx)
@@ -113,9 +114,46 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 		cancelValidator()
 		return 0, 0, 0
 	}
+
+	// ensure goroutines end before returning
+	var asyncWG sync.WaitGroup
+	errCh := make(chan error, 2)
+
+	asyncWG.Add(1)
 	go func() {
-		for msg := range watchCh {
-			fmt.Println("watch:", string(msg))
+		defer asyncWG.Done()
+		v.Run(vCtx)
+		if err := vCtx.Err(); err != nil && err != context.Canceled {
+			errCh <- fmt.Errorf("validator error: %w", err)
+		}
+	}()
+
+	asyncWG.Add(1)
+	go func() {
+		defer asyncWG.Done()
+		for {
+			select {
+			case <-watchCtx.Done():
+				if err := watchCtx.Err(); err != nil && err != context.Canceled {
+					errCh <- fmt.Errorf("watch error: %w", err)
+				}
+				return
+			case msg, ok := <-watchCh:
+				if !ok {
+					return
+				}
+				fmt.Println("watch:", string(msg))
+			}
+		}
+	}()
+
+	defer func() {
+		cancelWatch()
+		cancelValidator()
+		asyncWG.Wait()
+		close(errCh)
+		for err := range errCh {
+			log.Printf("async error: %v", err)
 		}
 	}()
 
@@ -123,8 +161,6 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 	locker := lock.NewInMemory(bus)
 	if err := locker.Acquire(ctx, "counter", 0); err != nil {
 		log.Printf("locker.Acquire error: %v", err)
-		cancelWatch()
-		cancelValidator()
 		return 0, 0, 0
 	}
 
@@ -157,15 +193,11 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 	val, err := w.Get(ctx, "counter")
 	if err != nil {
 		log.Printf("w.Get error: %v", err)
-		cancelWatch()
-		cancelValidator()
 		return 0, 0, 0
 	}
 	past, err := w.GetAt(ctx, "counter", time.Now().Add(-time.Millisecond))
 	if err != nil {
 		log.Printf("w.GetAt error: %v", err)
-		cancelWatch()
-		cancelValidator()
 		return 0, 0, 0
 	}
 	fmt.Println("current:", val, "past:", past)
@@ -175,8 +207,6 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 	}
 	w.RevokeLease(ctx, leaseID)
 	w.Unregister("counter")
-	cancelWatch()
-	cancelValidator()
 
 	// expose metrics
 	mfs, err := reg.Gather()
@@ -202,7 +232,10 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 }
 
 func main() {
-	ctx := context.Background()
+	// Use a cancelable context with a timeout to avoid leaking goroutines
+	// if main exits before the examples complete.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	withoutVal, withoutElapsed, withoutThroughput := runWithoutWarp(ctx)
 	withVal, withElapsed, withThroughput := runWithWarp(ctx)
 	fmt.Println("without warp:", withoutVal)
