@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/mirkobrombin/go-warp/v1/adapter"
 	"github.com/mirkobrombin/go-warp/v1/cache"
 	"github.com/mirkobrombin/go-warp/v1/cache/adaptive"
 	"github.com/mirkobrombin/go-warp/v1/cache/versioned"
@@ -26,25 +30,106 @@ const (
 	opsPerWorker = 500
 )
 
-func runWithoutWarp(ctx context.Context) (int, time.Duration, float64) {
+type runStats struct {
+	name       string
+	val        int
+	elapsed    time.Duration
+	throughput float64
+}
+
+// fileStore is a simple disk-backed store introducing real I/O overhead
+// for each operation to highlight Warp's caching benefits.
+type fileStore struct {
+	dir   string
+	delay time.Duration
+	mu    sync.Mutex
+}
+
+func newFileStore(dir string, delay time.Duration) *fileStore {
+	os.MkdirAll(dir, 0o755)
+	return &fileStore{dir: dir, delay: delay}
+}
+
+func (s *fileStore) path(key string) string {
+	return filepath.Join(s.dir, key+".txt")
+}
+
+func (s *fileStore) Get(ctx context.Context, key string) (int, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := os.ReadFile(s.path(key))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	v, err := strconv.Atoi(string(b))
+	if err != nil {
+		return 0, false, err
+	}
+	if s.delay > 0 {
+		time.Sleep(s.delay)
+	}
+	return v, true, nil
+}
+
+func (s *fileStore) Set(ctx context.Context, key string, value int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.WriteFile(s.path(key), []byte(strconv.Itoa(value)), 0o644); err != nil {
+		return err
+	}
+	if s.delay > 0 {
+		time.Sleep(s.delay)
+	}
+	return nil
+}
+
+func (s *fileStore) Keys(ctx context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			keys = append(keys, strings.TrimSuffix(e.Name(), ".txt"))
+		}
+	}
+	return keys, nil
+}
+
+func runWithoutWarp(ctx context.Context) runStats {
+	fmt.Println("=== Without Warp ===")
+	dir, err := os.MkdirTemp("", "warp_store")
+	if err != nil {
+		log.Printf("MkdirTemp error: %v", err)
+		return runStats{name: "without warp"}
+	}
+	defer os.RemoveAll(dir)
+	store := newFileStore(dir, 500*time.Microsecond)
+	if err := store.Set(ctx, "counter", 0); err != nil {
+		log.Printf("store.Set error: %v", err)
+		return runStats{name: "without warp"}
+	}
+
 	start := time.Now()
-	store := adapter.NewInMemoryStore[int]()
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
+	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < opsPerWorker; j++ {
+			for range opsPerWorker {
 				mu.Lock()
-				v, ok, err := store.Get(ctx, "counter")
+				v, _, err := store.Get(ctx, "counter")
 				if err != nil {
 					log.Printf("store.Get error: %v", err)
 					mu.Unlock()
 					return
-				}
-				if !ok {
-					v = 0
 				}
 				if err := store.Set(ctx, "counter", v+1); err != nil {
 					log.Printf("store.Set error: %v", err)
@@ -59,83 +144,182 @@ func runWithoutWarp(ctx context.Context) (int, time.Duration, float64) {
 	val, _, err := store.Get(ctx, "counter")
 	if err != nil {
 		log.Printf("store.Get error: %v", err)
-		return 0, 0, 0
+		return runStats{name: "without warp"}
 	}
 	elapsed := time.Since(start)
 	throughput := float64(opsPerWorker*workerCount) / elapsed.Seconds()
-	fmt.Printf("runWithoutWarp took %s, throughput %.2f ops/s\n", elapsed, throughput)
-	return val, elapsed, throughput
+	fmt.Printf("value=%d elapsed=%s throughput=%.2f ops/s\n", val, elapsed, throughput)
+	return runStats{name: "without warp", val: val, elapsed: elapsed, throughput: throughput}
 }
 
-func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
-	// ctx should be derived with context.WithCancel or context.WithTimeout so that
-	// all goroutines spawned in this function are canceled if main exits early.
+func runWithWarp(ctx context.Context) runStats {
+	fmt.Println("=== With Warp ===")
+	dir, err := os.MkdirTemp("", "warp_store")
+	if err != nil {
+		log.Printf("MkdirTemp error: %v", err)
+		return runStats{name: "with warp"}
+	}
+	defer os.RemoveAll(dir)
+	store := newFileStore(dir, 500*time.Microsecond)
+	if err := store.Set(ctx, "counter", 0); err != nil {
+		log.Printf("store.Set error: %v", err)
+		return runStats{name: "with warp"}
+	}
+
 	start := time.Now()
 	reg := metrics.NewRegistry()
 	metrics.RegisterCoreMetrics(reg)
 
-	store := adapter.NewInMemoryStore[int]()
+	bus := syncbus.NewInMemoryBus()
+
+	baseCache := cache.NewInMemory[merge.VersionedValue[int]]()
+	vCache := versioned.New[int](baseCache, workerCount*opsPerWorker, versioned.WithMetrics[int](reg))
+	engine := merge.NewEngine[int]()
+	w := core.New[int](vCache, store, bus, engine, core.WithMetrics[int](reg))
+
+	w.Merge("counter", func(old, new int) (int, error) { return old + new, nil })
+
+	w.Register("counter", core.ModeStrongLocal, time.Second, cache.WithSliding())
+	strat := adaptive.NewSlidingWindow(50*time.Millisecond, 20, time.Millisecond, 2*time.Second, reg)
+	w.RegisterDynamicTTL("hot", core.ModeStrongLocal, strat)
+
+	w.Warmup(ctx)
+	if err := w.Set(ctx, "hot", 1); err != nil {
+		log.Printf("w.Set hot error: %v", err)
+		return runStats{name: "with warp"}
+	}
+	leaseID, err := w.GrantLease(ctx, time.Second)
+	if err != nil {
+		log.Printf("GrantLease error: %v", err)
+		return runStats{name: "with warp"}
+	}
+	w.AttachKey(leaseID, "counter")
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for range workerCount {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range opsPerWorker {
+				txn := w.Txn(ctx)
+				txn.Set("counter", 1)
+				mu.Lock()
+				if err := txn.Commit(); err != nil {
+					log.Printf("txn.Commit error: %v", err)
+					mu.Unlock()
+					return
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	val, err := w.Get(ctx, "counter")
+	if err != nil {
+		log.Printf("w.Get error: %v", err)
+		return runStats{name: "with warp"}
+	}
+	past, err := w.GetAt(ctx, "counter", time.Now().Add(-time.Millisecond))
+	if err != nil {
+		log.Printf("w.GetAt error: %v", err)
+		return runStats{name: "with warp"}
+	}
+	fmt.Println("current:", val, "past:", past)
+
+	if err := w.Invalidate(ctx, "counter"); err != nil {
+		log.Printf("w.Invalidate error: %v", err)
+	}
+	w.RevokeLease(ctx, leaseID)
+	w.Unregister("counter")
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		log.Printf("reg.Gather error: %v", err)
+	} else {
+		fmt.Println("metrics:")
+		for _, mf := range mfs {
+			for _, m := range mf.Metric {
+				if m.Counter != nil {
+					fmt.Printf("  %s %f\n", mf.GetName(), m.GetCounter().GetValue())
+				} else if m.Gauge != nil {
+					fmt.Printf("  %s %f\n", mf.GetName(), m.GetGauge().GetValue())
+				}
+			}
+		}
+	}
+
+	elapsed := time.Since(start)
+	throughput := float64(opsPerWorker*workerCount) / elapsed.Seconds()
+	fmt.Printf("value=%d elapsed=%s throughput=%.2f ops/s\n", val, elapsed, throughput)
+
+	return runStats{name: "with warp", val: val, elapsed: elapsed, throughput: throughput}
+}
+
+func runWithWarpFull(ctx context.Context) runStats {
+	fmt.Println("=== With Warp + Validator & Bus ===")
+	dir, err := os.MkdirTemp("", "warp_store")
+	if err != nil {
+		log.Printf("MkdirTemp error: %v", err)
+		return runStats{name: "warp full"}
+	}
+	defer os.RemoveAll(dir)
+	store := newFileStore(dir, 500*time.Microsecond)
+	if err := store.Set(ctx, "counter", 0); err != nil {
+		log.Printf("store.Set error: %v", err)
+		return runStats{name: "warp full"}
+	}
+
+	start := time.Now()
+	reg := metrics.NewRegistry()
+	metrics.RegisterCoreMetrics(reg)
+
 	bus := syncbus.NewInMemoryBus()
 	wb := watchbus.NewInMemory()
 
 	baseCache := cache.NewInMemory[merge.VersionedValue[int]]()
-	vCache := versioned.New[int](baseCache, 10, versioned.WithMetrics[int](reg))
+	vCache := versioned.New[int](baseCache, workerCount*opsPerWorker, versioned.WithMetrics[int](reg))
 	engine := merge.NewEngine[int]()
 	w := core.New[int](vCache, store, bus, engine, core.WithMetrics[int](reg))
 
-	// merge logic to sum values
 	w.Merge("counter", func(old, new int) (int, error) { return old + new, nil })
 
-	// register keys
-	w.Register("counter", core.ModeEventualDistributed, time.Second,
-		cache.WithSliding(), cache.WithDynamicTTL(10*time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond, time.Second))
+	w.Register("counter", core.ModeStrongLocal, time.Second, cache.WithSliding())
 	strat := adaptive.NewSlidingWindow(50*time.Millisecond, 20, time.Millisecond, 2*time.Second, reg)
 	w.RegisterDynamicTTL("hot", core.ModeStrongLocal, strat)
 
-	// warmup and lease
 	w.Warmup(ctx)
+	if err := w.Set(ctx, "hot", 1); err != nil {
+		log.Printf("w.Set hot error: %v", err)
+		return runStats{name: "warp full"}
+	}
 	leaseID, err := w.GrantLease(ctx, time.Second)
 	if err != nil {
 		log.Printf("GrantLease error: %v", err)
-		return 0, 0, 0
+		return runStats{name: "warp full"}
 	}
 	w.AttachKey(leaseID, "counter")
 
-	// validator
 	v := w.Validator(validator.ModeAutoHeal, 100*time.Millisecond)
-	vCtx, cancelValidator := context.WithCancel(ctx)
 
-	// watch bus
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	watchCh, err := core.WatchPrefix(watchCtx, wb, "event")
 	if err != nil {
 		log.Printf("WatchPrefix error: %v", err)
 		cancelWatch()
-		cancelValidator()
-		return 0, 0, 0
+		return runStats{name: "warp full"}
 	}
 
-	// ensure goroutines end before returning
-	var asyncWG sync.WaitGroup
-	errCh := make(chan error, 2)
-
-	asyncWG.Add(1)
+	var watchWG sync.WaitGroup
+	watchWG.Add(1)
 	go func() {
-		defer asyncWG.Done()
-		v.Run(vCtx)
-		if err := vCtx.Err(); err != nil && err != context.Canceled {
-			errCh <- fmt.Errorf("validator error: %w", err)
-		}
-	}()
-
-	asyncWG.Add(1)
-	go func() {
-		defer asyncWG.Done()
+		defer watchWG.Done()
 		for {
 			select {
 			case <-watchCtx.Done():
 				if err := watchCtx.Err(); err != nil && err != context.Canceled {
-					errCh <- fmt.Errorf("watch error: %w", err)
+					log.Printf("watch error: %v", err)
 				}
 				return
 			case msg, ok := <-watchCh:
@@ -149,56 +333,61 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 
 	defer func() {
 		cancelWatch()
-		cancelValidator()
-		asyncWG.Wait()
-		close(errCh)
-		for err := range errCh {
-			log.Printf("async error: %v", err)
-		}
+		watchWG.Wait()
 	}()
 
-	// lock
 	locker := lock.NewInMemory(bus)
 	if err := locker.Acquire(ctx, "counter", 0); err != nil {
 		log.Printf("locker.Acquire error: %v", err)
-		return 0, 0, 0
+		return runStats{name: "warp full"}
 	}
 
-	// stress with Txn
 	var wg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
+	var mu sync.Mutex
+	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < opsPerWorker; j++ {
+			for range opsPerWorker {
 				txn := w.Txn(ctx)
 				txn.Set("counter", 1)
-				txn.CompareAndSwap("hot", 0, 1) // no-op but exercises CAS
+				mu.Lock()
 				if err := txn.Commit(); err != nil {
 					log.Printf("txn.Commit error: %v", err)
+					mu.Unlock()
 					return
 				}
+				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
+
+	valCtx, cancelVal := context.WithCancel(ctx)
+	go v.Run(valCtx)
+	time.Sleep(150 * time.Millisecond)
+	cancelVal()
+
 	if err := locker.Release(ctx, "counter"); err != nil {
 		log.Printf("locker.Release error: %v", err)
 	}
+
+	// allow validator to flush latest store state
+	time.Sleep(200 * time.Millisecond)
 
 	if err := wb.Publish(ctx, "event/warp", []byte("done")); err != nil {
 		log.Printf("wb.Publish error: %v", err)
 	}
 
-	val, err := w.Get(ctx, "counter")
+	val, _, err := store.Get(ctx, "counter")
 	if err != nil {
-		log.Printf("w.Get error: %v", err)
-		return 0, 0, 0
+		log.Printf("store.Get error: %v", err)
+		return runStats{name: "warp full"}
 	}
 	past, err := w.GetAt(ctx, "counter", time.Now().Add(-time.Millisecond))
 	if err != nil {
 		log.Printf("w.GetAt error: %v", err)
-		return 0, 0, 0
+		return runStats{name: "warp full"}
 	}
 	fmt.Println("current:", val, "past:", past)
 
@@ -208,17 +397,17 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 	w.RevokeLease(ctx, leaseID)
 	w.Unregister("counter")
 
-	// expose metrics
 	mfs, err := reg.Gather()
 	if err != nil {
 		log.Printf("reg.Gather error: %v", err)
 	} else {
+		fmt.Println("metrics:")
 		for _, mf := range mfs {
 			for _, m := range mf.Metric {
 				if m.Counter != nil {
-					fmt.Printf("metric %s %f\n", mf.GetName(), m.GetCounter().GetValue())
+					fmt.Printf("  %s %f\n", mf.GetName(), m.GetCounter().GetValue())
 				} else if m.Gauge != nil {
-					fmt.Printf("metric %s %f\n", mf.GetName(), m.GetGauge().GetValue())
+					fmt.Printf("  %s %f\n", mf.GetName(), m.GetGauge().GetValue())
 				}
 			}
 		}
@@ -226,23 +415,28 @@ func runWithWarp(ctx context.Context) (int, time.Duration, float64) {
 
 	elapsed := time.Since(start)
 	throughput := float64(opsPerWorker*workerCount) / elapsed.Seconds()
-	fmt.Printf("runWithWarp took %s, throughput %.2f ops/s\n", elapsed, throughput)
+	fmt.Printf("value=%d elapsed=%s throughput=%.2f ops/s\n", val, elapsed, throughput)
 
-	return val, elapsed, throughput
+	return runStats{name: "warp full", val: val, elapsed: elapsed, throughput: throughput}
 }
 
 func main() {
-	// Use a cancelable context with a timeout to avoid leaking goroutines
-	// if main exits before the examples complete.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	withoutVal, withoutElapsed, withoutThroughput := runWithoutWarp(ctx)
-	withVal, withElapsed, withThroughput := runWithWarp(ctx)
-	fmt.Println("without warp:", withoutVal)
-	fmt.Println("with warp:", withVal)
-	fmt.Printf("time: without %s vs with %s\n", withoutElapsed, withElapsed)
-	fmt.Printf("throughput: without %.2f ops/s vs with %.2f ops/s\n", withoutThroughput, withThroughput)
-	if withElapsed < withoutElapsed {
-		fmt.Printf("warp speedup: %.2fx faster, throughput gain: %.2fx\n", withoutElapsed.Seconds()/withElapsed.Seconds(), withThroughput/withoutThroughput)
+
+	without := runWithoutWarp(ctx)
+	withOnly := runWithWarp(ctx)
+	withFull := runWithWarpFull(ctx)
+
+	fmt.Println("\n=== Summary ===")
+	fmt.Printf("without warp: value=%d elapsed=%s throughput=%.2f ops/s\n", without.val, without.elapsed, without.throughput)
+	fmt.Printf("with warp: value=%d elapsed=%s throughput=%.2f ops/s\n", withOnly.val, withOnly.elapsed, withOnly.throughput)
+	fmt.Printf("with warp + extras: value=%d elapsed=%s throughput=%.2f ops/s\n", withFull.val, withFull.elapsed, withFull.throughput)
+
+	if withOnly.elapsed > 0 {
+		fmt.Printf("speedup warp vs without: %.2fx\n", without.elapsed.Seconds()/withOnly.elapsed.Seconds())
+	}
+	if withFull.elapsed > 0 {
+		fmt.Printf("speedup warp+extras vs without: %.2fx\n", without.elapsed.Seconds()/withFull.elapsed.Seconds())
 	}
 }
