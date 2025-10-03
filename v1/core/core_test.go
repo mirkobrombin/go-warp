@@ -185,6 +185,74 @@ func TestWarpSetGet(t *testing.T) {
 	}
 }
 
+func TestWarpConcurrentAccess(t *testing.T) {
+	ctx := context.Background()
+	c := cache.NewInMemory[merge.Value[int]]()
+	s := adapter.NewInMemoryStore[int]()
+	w := New[int](c, s, syncbus.NewInMemoryBus(), merge.NewEngine[int]())
+	if !w.Register(
+		"counter",
+		ModeStrongLocal,
+		time.Second,
+		cache.WithSliding(),
+		cache.WithDynamicTTL(10*time.Millisecond, 5*time.Millisecond, 1*time.Millisecond, 5*time.Millisecond, time.Second),
+	) {
+		t.Fatalf("expected registration to succeed")
+	}
+	if err := w.Set(ctx, "counter", 0); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	const goroutines = 32
+	const iterations = 64
+
+	start := make(chan struct{})
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			<-start
+			for j := 0; j < iterations; j++ {
+				if err := w.Set(ctx, "counter", base*iterations+j); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}(i)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < iterations; j++ {
+				if _, err := w.Get(ctx, "counter"); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("concurrent access failed: %v", err)
+	default:
+	}
+}
+
 func TestWarpGetAtRollback(t *testing.T) {
 	ctx := context.Background()
 	base := cache.NewInMemory[merge.VersionedValue[string]]()
