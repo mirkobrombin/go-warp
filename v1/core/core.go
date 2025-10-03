@@ -33,6 +33,7 @@ const (
 )
 
 type registration struct {
+	mu          sync.Mutex
 	ttl         time.Duration
 	ttlStrategy cache.TTLStrategy
 	ttlOpts     cache.TTLOptions
@@ -238,16 +239,26 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 			if reg.ttlOpts.Sliding || reg.ttlOpts.FreqThreshold > 0 {
 				ttl := reg.ttlStrategy.TTL(key)
 				if reg.ttlOpts.FreqThreshold > 0 {
+					reg.mu.Lock()
 					ttl = reg.ttlOpts.Adjust(ttl, reg.lastAccess, now)
+					reg.currentTTL = ttl
+					reg.lastAccess = now
+					reg.mu.Unlock()
+				} else {
+					reg.mu.Lock()
+					reg.currentTTL = ttl
+					reg.lastAccess = now
+					reg.mu.Unlock()
 				}
-				reg.currentTTL = ttl
-				reg.lastAccess = now
 				_ = w.cache.Set(ctx, key, v, ttl)
 			}
 		} else if reg.ttlOpts.Sliding || reg.ttlOpts.FreqThreshold > 0 {
-			reg.currentTTL = reg.ttlOpts.Adjust(reg.currentTTL, reg.lastAccess, now)
+			reg.mu.Lock()
+			ttl := reg.ttlOpts.Adjust(reg.currentTTL, reg.lastAccess, now)
+			reg.currentTTL = ttl
 			reg.lastAccess = now
-			_ = w.cache.Set(ctx, key, v, reg.currentTTL)
+			reg.mu.Unlock()
+			_ = w.cache.Set(ctx, key, v, ttl)
 		}
 		if w.hitCounter != nil {
 			w.hitCounter.Inc()
@@ -273,8 +284,10 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 			if reg.ttlStrategy != nil {
 				ttl = reg.ttlStrategy.TTL(key)
 			}
+			reg.mu.Lock()
 			reg.currentTTL = ttl
 			reg.lastAccess = now
+			reg.mu.Unlock()
 			_ = w.cache.Set(ctx, key, mv, ttl)
 			return mv.Data, nil
 		}
@@ -368,8 +381,10 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	if reg.ttlStrategy != nil {
 		ttl = reg.ttlStrategy.TTL(key)
 	}
+	reg.mu.Lock()
 	reg.currentTTL = ttl
 	reg.lastAccess = now
+	reg.mu.Unlock()
 	if err := w.cache.Set(ctx, key, newVal, ttl); err != nil {
 		return err
 	}
@@ -502,8 +517,10 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 		if reg.ttlStrategy != nil {
 			ttl = reg.ttlStrategy.TTL(r.key)
 		}
+		reg.mu.Lock()
 		reg.currentTTL = ttl
 		reg.lastAccess = now
+		reg.mu.Unlock()
 		_ = w.cache.Set(ctx, r.key, mv, ttl)
 	}
 }
@@ -613,8 +630,10 @@ func (t *Txn[T]) Commit() error {
 		if reg.ttlStrategy != nil {
 			ttl = reg.ttlStrategy.TTL(key)
 		}
+		reg.mu.Lock()
 		reg.currentTTL = ttl
 		reg.lastAccess = now
+		reg.mu.Unlock()
 		if err := t.w.cache.Set(ctx, key, newVal, ttl); err != nil {
 			return err
 		}
@@ -702,8 +721,10 @@ func (vc validatorCache[T]) Set(ctx context.Context, key string, value T, _ time
 			reg.ttlStrategy.Record(key)
 			ttl = reg.ttlStrategy.TTL(key)
 		}
+		reg.mu.Lock()
 		reg.currentTTL = ttl
 		reg.lastAccess = now
+		reg.mu.Unlock()
 	}
 	return vc.w.cache.Set(ctx, key, mv, ttl)
 }
