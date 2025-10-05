@@ -94,6 +94,28 @@ func (b *NATSBus) Publish(ctx context.Context, key string) error {
 	return err
 }
 
+// PublishAndAwait implements Bus.PublishAndAwait. NATS core subjects do not expose
+// subscriber counts, so only a quorum of 1 is supported.
+func (b *NATSBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+	if replicas <= 0 {
+		replicas = 1
+	}
+	if replicas > 1 {
+		return ErrQuorumUnsupported
+	}
+	if err := b.Publish(ctx, key); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout := time.Until(deadline)
+		if timeout <= 0 {
+			return ctx.Err()
+		}
+		return b.conn.FlushTimeout(timeout)
+	}
+	return b.conn.Flush()
+}
+
 // Subscribe implements Bus.Subscribe.
 func (b *NATSBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
 	ch := make(chan struct{}, 1)

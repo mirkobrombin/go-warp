@@ -7,6 +7,7 @@ The `syncbus` package provides a pluggable mechanism to propagate invalidations 
 ```go
 type Bus interface {
     Publish(ctx context.Context, key string) error
+    PublishAndAwait(ctx context.Context, key string, replicas int) error
     Subscribe(ctx context.Context, key string) (chan struct{}, error)
     Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
 }
@@ -15,6 +16,10 @@ type Bus interface {
 Subscriptions are automatically cleaned up when the context passed to
 `Subscribe` is done, but can also be explicitly removed via
 `Unsubscribe`.
+
+`PublishAndAwait` is used by strong distributed mode to block until a quorum
+of replicas confirms the invalidation. Implementations that cannot report
+acknowledgements must return `syncbus.ErrQuorumUnsupported`.
 
 ## In-Memory Bus
 

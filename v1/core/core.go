@@ -40,6 +40,7 @@ type registration struct {
 	mode        Mode
 	currentTTL  time.Duration
 	lastAccess  time.Time
+	quorum      int
 }
 
 type regShard struct {
@@ -169,6 +170,7 @@ func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration, opts ...cac
 		ttlOpts:    to,
 		mode:       mode,
 		currentTTL: ttl,
+		quorum:     1,
 	}
 	return true
 }
@@ -186,7 +188,7 @@ func (w *Warp[T]) RegisterDynamicTTL(key string, mode Mode, strat cache.TTLStrat
 	for _, opt := range opts {
 		opt(&to)
 	}
-	shard.regs[key] = &registration{ttlStrategy: strat, ttlOpts: to, mode: mode}
+	shard.regs[key] = &registration{ttlStrategy: strat, ttlOpts: to, mode: mode, quorum: 1}
 	return true
 }
 
@@ -198,6 +200,34 @@ func (w *Warp[T]) Unregister(key string) {
 	shard.Unlock()
 }
 
+// SetQuorum configures the quorum size for strong distributed operations on a key.
+// Values less than 1 are coerced to 1. It returns false if the key is not registered.
+func (w *Warp[T]) SetQuorum(key string, replicas int) bool {
+	shard := w.shard(key)
+	shard.RLock()
+	reg, ok := shard.regs[key]
+	shard.RUnlock()
+	if !ok {
+		return false
+	}
+	if replicas < 1 {
+		replicas = 1
+	}
+	reg.mu.Lock()
+	reg.quorum = replicas
+	reg.mu.Unlock()
+	return true
+}
+
+func (r *registration) quorumSize() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.quorum < 1 {
+		return 1
+	}
+	return r.quorum
+}
+
 // ErrNotFound is returned when a key does not exist in the cache.
 var ErrNotFound = errors.New("warp: not found")
 
@@ -206,6 +236,9 @@ var ErrUnregistered = errors.New("warp: key not registered")
 
 // ErrCASMismatch is returned when the expected value differs from the current one.
 var ErrCASMismatch = errors.New("warp: cas mismatch")
+
+// ErrBusRequired is returned when a distributed mode is used without a sync bus.
+var ErrBusRequired = errors.New("warp: sync bus required for distributed mode")
 
 // Get retrieves a value from the cache.
 func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
@@ -394,15 +427,26 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 		}
 	}
 
-	if reg.mode != ModeStrongLocal && w.bus != nil {
-		go func() {
-			if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
-				select {
-				case w.publishErrCh <- err:
-				default:
+	switch reg.mode {
+	case ModeEventualDistributed:
+		if w.bus != nil {
+			go func() {
+				if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
+					select {
+					case w.publishErrCh <- err:
+					default:
+					}
 				}
-			}
-		}()
+			}()
+		}
+	case ModeStrongDistributed:
+		if w.bus == nil {
+			return ErrBusRequired
+		}
+		quorum := reg.quorumSize()
+		if err := w.bus.PublishAndAwait(ctx, key, quorum); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -434,15 +478,26 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 	if w.evictionCounter != nil {
 		w.evictionCounter.Inc()
 	}
-	if reg.mode != ModeStrongLocal && w.bus != nil {
-		go func() {
-			if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
-				select {
-				case w.publishErrCh <- err:
-				default:
+	switch reg.mode {
+	case ModeEventualDistributed:
+		if w.bus != nil {
+			go func() {
+				if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
+					select {
+					case w.publishErrCh <- err:
+					default:
+					}
 				}
-			}
-		}()
+			}()
+		}
+	case ModeStrongDistributed:
+		if w.bus == nil {
+			return ErrBusRequired
+		}
+		quorum := reg.quorumSize()
+		if err := w.bus.PublishAndAwait(ctx, key, quorum); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -648,8 +703,19 @@ func (t *Txn[T]) Commit() error {
 			}
 		}
 
-		if reg.mode != ModeStrongLocal && t.w.bus != nil {
-			if err := t.w.bus.Publish(ctx, key); err != nil {
+		switch reg.mode {
+		case ModeEventualDistributed:
+			if t.w.bus != nil {
+				if err := t.w.bus.Publish(ctx, key); err != nil {
+					return err
+				}
+			}
+		case ModeStrongDistributed:
+			if t.w.bus == nil {
+				return ErrBusRequired
+			}
+			quorum := reg.quorumSize()
+			if err := t.w.bus.PublishAndAwait(ctx, key, quorum); err != nil {
 				return err
 			}
 		}
@@ -676,8 +742,19 @@ func (t *Txn[T]) Commit() error {
 			}
 		}
 
-		if reg.mode != ModeStrongLocal && t.w.bus != nil {
-			if err := t.w.bus.Publish(ctx, key); err != nil {
+		switch reg.mode {
+		case ModeEventualDistributed:
+			if t.w.bus != nil {
+				if err := t.w.bus.Publish(ctx, key); err != nil {
+					return err
+				}
+			}
+		case ModeStrongDistributed:
+			if t.w.bus == nil {
+				return ErrBusRequired
+			}
+			quorum := reg.quorumSize()
+			if err := t.w.bus.PublishAndAwait(ctx, key, quorum); err != nil {
 				return err
 			}
 		}

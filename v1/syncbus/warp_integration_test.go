@@ -40,15 +40,29 @@ func TestRedisBusConcurrentInvalidations(t *testing.T) {
 	w1.Register("key", core.ModeStrongDistributed, time.Minute)
 	w2.Register("key", core.ModeStrongDistributed, time.Minute)
 
+	sub, err := bus.Subscribe(ctx, "key")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Unsubscribe(context.Background(), "key", sub) })
+	go func() {
+		for range sub {
+		}
+	}()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_ = w1.Invalidate(ctx, "key")
+		if err := w1.Invalidate(ctx, "key"); err != nil {
+			t.Errorf("w1 invalidate: %v", err)
+		}
 	}()
 	go func() {
 		defer wg.Done()
-		_ = w2.Invalidate(ctx, "key")
+		if err := w2.Invalidate(ctx, "key"); err != nil {
+			t.Errorf("w2 invalidate: %v", err)
+		}
 	}()
 	wg.Wait()
 	time.Sleep(50 * time.Millisecond)
