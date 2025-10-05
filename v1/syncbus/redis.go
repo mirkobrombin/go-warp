@@ -116,6 +116,92 @@ func (b *RedisBus) Publish(ctx context.Context, key string) error {
 	return nil
 }
 
+// PublishAndAwait implements Bus.PublishAndAwait using Redis publish counts.
+func (b *RedisBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+	if replicas <= 0 {
+		replicas = 1
+	}
+	if err := ctx.Err(); err != nil {
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			return warperrors.ErrTimeout
+		}
+		return err
+	}
+	b.mu.Lock()
+	if _, ok := b.pending[key]; ok {
+		b.mu.Unlock()
+		return nil
+	}
+	b.pending[key] = struct{}{}
+	b.mu.Unlock()
+
+	if j := rand.Int63n(int64(10 * time.Millisecond)); j > 0 {
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			if stdErrors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return warperrors.ErrTimeout
+			}
+			return ctx.Err()
+		case <-time.After(time.Duration(j)):
+		}
+	}
+
+	id := uuid.NewString()
+	backoff := 100 * time.Millisecond
+	var (
+		err       error
+		delivered int64
+	)
+	for {
+		cctx, cancel := context.WithTimeout(ctx, redisBusTimeout)
+		cmd := b.client.Publish(cctx, key, id)
+		delivered, err = cmd.Result()
+		cancel()
+		if err == nil {
+			break
+		}
+		if stdErrors.Is(err, context.DeadlineExceeded) {
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			return warperrors.ErrTimeout
+		}
+		_ = b.reconnect()
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			if stdErrors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return warperrors.ErrTimeout
+			}
+			return ctx.Err()
+		default:
+		}
+		jitter := time.Duration(rand.Int63n(int64(backoff)))
+		time.Sleep(backoff + jitter)
+		if backoff < time.Second {
+			backoff *= 2
+			if backoff > time.Second {
+				backoff = time.Second
+			}
+		}
+	}
+
+	b.mu.Lock()
+	delete(b.pending, key)
+	b.mu.Unlock()
+
+	if int(delivered) < replicas {
+		return ErrQuorumNotSatisfied
+	}
+	atomic.AddUint64(&b.published, 1)
+	return nil
+}
+
 // Subscribe implements Bus.Subscribe.
 func (b *RedisBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
 	if err := ctx.Err(); err != nil {

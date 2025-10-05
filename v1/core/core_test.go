@@ -32,6 +32,7 @@ func (s errStore[T]) Keys(ctx context.Context) ([]string, error) { return nil, n
 type errBus struct{ err error }
 
 func (b errBus) Publish(ctx context.Context, key string) error                       { return b.err }
+func (b errBus) PublishAndAwait(ctx context.Context, key string, replicas int) error { return b.err }
 func (b errBus) Subscribe(ctx context.Context, key string) (chan struct{}, error)    { return nil, nil }
 func (b errBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error { return nil }
 func (b errBus) RevokeLease(ctx context.Context, id string) error                    { return b.err }
@@ -53,6 +54,10 @@ func (b *slowBus) Publish(ctx context.Context, key string) error {
 		b.done <- struct{}{}
 	}
 	return nil
+}
+
+func (b *slowBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+	return b.Publish(ctx, key)
 }
 
 func (b *slowBus) Subscribe(ctx context.Context, key string) (chan struct{}, error)    { return nil, nil }

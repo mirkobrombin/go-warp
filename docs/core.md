@@ -27,6 +27,24 @@ The available modes are summarized below:
 
 There is no default mode; each key must explicitly choose one when registered.
 
+### Strong Distributed Quorum
+
+Strong distributed registrations coordinate writes through the sync bus.
+`Set`, `Invalidate` and transactional commits block until the configured
+quorum acknowledges the invalidation event. The default quorum is `1` and can
+be increased with `SetQuorum`:
+
+```go
+w.Register("orders", core.ModeStrongDistributed, time.Minute)
+w.SetQuorum("orders", 3) // wait for three replicas
+```
+
+Warp requires a bus implementation that supports quorum acknowledgements via
+`PublishAndAwait`. If the configured bus does not expose quorum semantics it
+must return `syncbus.ErrQuorumUnsupported`. When the required number of
+replicas is not reached the call fails with `syncbus.ErrQuorumNotSatisfied`.
+Using strong distributed mode without a bus returns `core.ErrBusRequired`.
+
 ## Basic Operations
 
 ```go

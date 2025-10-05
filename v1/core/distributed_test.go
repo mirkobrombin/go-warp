@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,52 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
 )
+
+type fakeQuorumBus struct {
+	ackCh chan struct{}
+	err   error
+}
+
+func newFakeQuorumBus() *fakeQuorumBus {
+	return &fakeQuorumBus{ackCh: make(chan struct{})}
+}
+
+func (b *fakeQuorumBus) Publish(ctx context.Context, key string) error { return nil }
+
+func (b *fakeQuorumBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+	if replicas <= 0 {
+		replicas = 1
+	}
+	if b.err != nil {
+		return b.err
+	}
+	for i := 0; i < replicas; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-b.ackCh:
+		}
+	}
+	return nil
+}
+
+func (b *fakeQuorumBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
+	return nil, nil
+}
+
+func (b *fakeQuorumBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error {
+	return nil
+}
+
+func (b *fakeQuorumBus) RevokeLease(ctx context.Context, id string) error { return nil }
+
+func (b *fakeQuorumBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+	return nil, nil
+}
+
+func (b *fakeQuorumBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+	return nil
+}
 
 func TestWarpDistributedRedis(t *testing.T) {
 	ctx := context.Background()
@@ -174,5 +221,73 @@ func TestWarpDistributedNATS(t *testing.T) {
 	ev := testutil.ToFloat64(w1.evictionCounter) + testutil.ToFloat64(w2.evictionCounter)
 	if ev != 2 {
 		t.Fatalf("expected 2 evictions got %v", ev)
+	}
+}
+
+func TestWarpStrongDistributedWaitsForQuorum(t *testing.T) {
+	ctx := context.Background()
+	bus := newFakeQuorumBus()
+	store := adapter.NewInMemoryStore[int]()
+	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w.Register("counter", ModeStrongDistributed, time.Minute)
+	if !w.SetQuorum("counter", 2) {
+		t.Fatalf("expected quorum configuration to succeed")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- w.Set(ctx, "counter", 1)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("set returned before quorum: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	bus.ackCh <- struct{}{}
+
+	select {
+	case err := <-done:
+		t.Fatalf("set returned after single ack: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	bus.ackCh <- struct{}{}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("set error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("set timed out waiting for quorum")
+	}
+}
+
+func TestWarpStrongDistributedQuorumTimeout(t *testing.T) {
+	bus := newFakeQuorumBus()
+	store := adapter.NewInMemoryStore[int]()
+	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w.Register("counter", ModeStrongDistributed, time.Minute)
+	w.SetQuorum("counter", 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := w.Set(ctx, "counter", 1); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got %v", err)
+	}
+}
+
+func TestWarpStrongDistributedQuorumError(t *testing.T) {
+	bus := newFakeQuorumBus()
+	bus.err = syncbus.ErrQuorumNotSatisfied
+	store := adapter.NewInMemoryStore[int]()
+	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w.Register("counter", ModeStrongDistributed, time.Minute)
+	w.SetQuorum("counter", 3)
+
+	if err := w.Set(context.Background(), "counter", 1); !errors.Is(err, syncbus.ErrQuorumNotSatisfied) {
+		t.Fatalf("expected quorum error, got %v", err)
 	}
 }

@@ -35,6 +35,58 @@ func TestPublishSubscribeFlowAndMetrics(t *testing.T) {
 	}
 }
 
+func TestPublishAndAwaitQuorumSatisfied(t *testing.T) {
+	bus := NewInMemoryBus()
+	ctx := context.Background()
+	ch, err := bus.Subscribe(ctx, "key")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		if err := bus.PublishAndAwait(ctx, "key", 1); err != nil {
+			t.Errorf("publish and await: %v", err)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for quorum publish")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("publish and await did not return")
+	}
+
+	metrics := bus.Metrics()
+	if metrics.Published != 1 {
+		t.Fatalf("expected published 1 got %d", metrics.Published)
+	}
+	if metrics.Delivered != 1 {
+		t.Fatalf("expected delivered 1 got %d", metrics.Delivered)
+	}
+}
+
+func TestPublishAndAwaitQuorumNotSatisfied(t *testing.T) {
+	bus := NewInMemoryBus()
+	ctx := context.Background()
+	if err := bus.PublishAndAwait(ctx, "key", 2); err != ErrQuorumNotSatisfied {
+		t.Fatalf("expected quorum error, got %v", err)
+	}
+	metrics := bus.Metrics()
+	if metrics.Published != 0 {
+		t.Fatalf("expected published 0 got %d", metrics.Published)
+	}
+	if metrics.Delivered != 0 {
+		t.Fatalf("expected delivered 0 got %d", metrics.Delivered)
+	}
+}
+
 func TestContextBasedUnsubscribe(t *testing.T) {
 	bus := NewInMemoryBus()
 	ctx, cancel := context.WithCancel(context.Background())

@@ -89,6 +89,15 @@ func (b *KafkaBus) Publish(ctx context.Context, key string) error {
 	return nil
 }
 
+// PublishAndAwait implements Bus.PublishAndAwait. Kafka sync producer does not expose
+// subscriber replication acknowledgements at this level, so quorum is unsupported.
+func (b *KafkaBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+	if replicas <= 1 {
+		return b.Publish(ctx, key)
+	}
+	return ErrQuorumUnsupported
+}
+
 // Subscribe implements Bus.Subscribe.
 func (b *KafkaBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
 	ch := make(chan struct{}, 1)

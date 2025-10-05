@@ -17,6 +17,9 @@ type failingBus struct {
 }
 
 func (f *failingBus) Publish(ctx context.Context, key string) error { return f.publishErr }
+func (f *failingBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+	return f.publishErr
+}
 func (f *failingBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
 	return nil, f.subscribeErr
 }
@@ -32,7 +35,7 @@ func (f *failingBus) UnsubscribeLease(ctx context.Context, id string, ch chan st
 func TestWarpPublishError(t *testing.T) {
 	bus := &failingBus{publishErr: errors.New("publish failed")}
 	w := core.New[string](cache.NewInMemory[merge.Value[string]](), nil, bus, merge.NewEngine[string]())
-	w.Register("key", core.ModeStrongDistributed, time.Minute)
+	w.Register("key", core.ModeEventualDistributed, time.Minute)
 	if err := w.Invalidate(context.Background(), "key"); err != nil {
 		t.Fatalf("unexpected invalidate error: %v", err)
 	}

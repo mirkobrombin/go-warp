@@ -2,16 +2,23 @@ package syncbus
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+var (
+	ErrQuorumUnsupported  = errors.New("syncbus: quorum unsupported")
+	ErrQuorumNotSatisfied = errors.New("syncbus: quorum not satisfied")
+)
+
 // Bus provides a simple pub/sub mechanism used by warp to propagate
 // invalidation events across nodes.
 type Bus interface {
 	Publish(ctx context.Context, key string) error
+	PublishAndAwait(ctx context.Context, key string, replicas int) error
 	Subscribe(ctx context.Context, key string) (chan struct{}, error)
 	Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
 	RevokeLease(ctx context.Context, id string) error
@@ -82,6 +89,70 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 	b.mu.Lock()
 	delete(b.pending, key)
 	b.mu.Unlock()
+	return nil
+}
+
+// PublishAndAwait implements Bus.PublishAndAwait.
+func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+	if replicas <= 0 {
+		replicas = 1
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	b.mu.Lock()
+	if _, ok := b.pending[key]; ok {
+		b.mu.Unlock()
+		return nil
+	}
+	chans := append([]chan struct{}(nil), b.subs[key]...)
+	if len(chans) < replicas {
+		b.mu.Unlock()
+		return ErrQuorumNotSatisfied
+	}
+	b.pending[key] = struct{}{}
+	b.mu.Unlock()
+
+	if j := rand.Int63n(int64(10 * time.Millisecond)); j > 0 {
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			return ctx.Err()
+		case <-time.After(time.Duration(j)):
+		}
+	}
+
+	delivered := 0
+	for _, ch := range chans {
+		select {
+		case <-ctx.Done():
+			b.mu.Lock()
+			delete(b.pending, key)
+			b.mu.Unlock()
+			return ctx.Err()
+		default:
+		}
+		select {
+		case ch <- struct{}{}:
+			atomic.AddUint64(&b.delivered, 1)
+			delivered++
+		default:
+		}
+	}
+
+	b.mu.Lock()
+	delete(b.pending, key)
+	b.mu.Unlock()
+
+	if delivered < replicas {
+		return ErrQuorumNotSatisfied
+	}
+	atomic.AddUint64(&b.published, 1)
 	return nil
 }
 
