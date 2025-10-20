@@ -21,8 +21,10 @@ import (
 )
 
 type fakeQuorumBus struct {
-	ackCh chan struct{}
-	err   error
+	ackCh  chan struct{}
+	err    error
+	mu     sync.Mutex
+	errSeq []error
 }
 
 func newFakeQuorumBus() *fakeQuorumBus {
@@ -35,8 +37,17 @@ func (b *fakeQuorumBus) PublishAndAwait(ctx context.Context, key string, replica
 	if replicas <= 0 {
 		replicas = 1
 	}
-	if b.err != nil {
-		return b.err
+	b.mu.Lock()
+	var nextErr error
+	if len(b.errSeq) > 0 {
+		nextErr = b.errSeq[0]
+		b.errSeq = b.errSeq[1:]
+	} else {
+		nextErr = b.err
+	}
+	b.mu.Unlock()
+	if nextErr != nil {
+		return nextErr
 	}
 	for i := 0; i < replicas; i++ {
 		select {
@@ -289,5 +300,182 @@ func TestWarpStrongDistributedQuorumError(t *testing.T) {
 
 	if err := w.Set(context.Background(), "counter", 1); !errors.Is(err, syncbus.ErrQuorumNotSatisfied) {
 		t.Fatalf("expected quorum error, got %v", err)
+	}
+}
+
+func TestWarpSetRollbackOnQuorumFailure(t *testing.T) {
+	ctx := context.Background()
+	bus := newFakeQuorumBus()
+	store := adapter.NewInMemoryStore[int]()
+	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w.Register("counter", ModeStrongDistributed, time.Minute)
+
+	go func() {
+		bus.ackCh <- struct{}{}
+	}()
+	if err := w.Set(ctx, "counter", 1); err != nil {
+		t.Fatalf("set baseline: %v", err)
+	}
+
+	bus.err = syncbus.ErrQuorumNotSatisfied
+	if err := w.Set(ctx, "counter", 2); !errors.Is(err, syncbus.ErrQuorumNotSatisfied) {
+		t.Fatalf("expected quorum failure, got %v", err)
+	}
+
+	if got, ok, err := store.Get(ctx, "counter"); err != nil || !ok || got != 1 {
+		t.Fatalf("store value changed after failure: ok=%v err=%v got=%d", ok, err, got)
+	}
+	if mv, ok, err := w.cache.Get(ctx, "counter"); err != nil {
+		t.Fatalf("cache get: %v", err)
+	} else if !ok || mv.Data != 1 {
+		t.Fatalf("cache value changed after failure: ok=%v data=%v", ok, mv.Data)
+	}
+}
+
+func TestWarpInvalidateRollbackOnQuorumFailure(t *testing.T) {
+	ctx := context.Background()
+	bus := newFakeQuorumBus()
+	store := adapter.NewInMemoryStore[int]()
+	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w.Register("counter", ModeStrongDistributed, time.Minute)
+
+	go func() {
+		bus.ackCh <- struct{}{}
+	}()
+	if err := w.Set(ctx, "counter", 1); err != nil {
+		t.Fatalf("set baseline: %v", err)
+	}
+
+	bus.err = syncbus.ErrQuorumNotSatisfied
+	if err := w.Invalidate(ctx, "counter"); !errors.Is(err, syncbus.ErrQuorumNotSatisfied) {
+		t.Fatalf("expected quorum failure, got %v", err)
+	}
+
+	if mv, ok, err := w.cache.Get(ctx, "counter"); err != nil {
+		t.Fatalf("cache get: %v", err)
+	} else if !ok || mv.Data != 1 {
+		t.Fatalf("cache value removed after failure: ok=%v data=%v", ok, mv.Data)
+	}
+	if got, err := w.Get(ctx, "counter"); err != nil || got != 1 {
+		t.Fatalf("warp get mismatch after failure: val=%d err=%v", got, err)
+	}
+}
+
+func TestWarpTxnRollbackOnQuorumFailure(t *testing.T) {
+	ctx := context.Background()
+	bus := newFakeQuorumBus()
+	store := adapter.NewInMemoryStore[int]()
+	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w.Register("counter", ModeStrongDistributed, time.Minute)
+
+	go func() {
+		bus.ackCh <- struct{}{}
+	}()
+	if err := w.Set(ctx, "counter", 1); err != nil {
+		t.Fatalf("set baseline: %v", err)
+	}
+
+	txn := w.Txn(ctx)
+	txn.Set("counter", 2)
+	bus.err = syncbus.ErrQuorumNotSatisfied
+	if err := txn.Commit(); !errors.Is(err, syncbus.ErrQuorumNotSatisfied) {
+		t.Fatalf("expected quorum failure, got %v", err)
+	}
+
+	if mv, ok, err := w.cache.Get(ctx, "counter"); err != nil {
+		t.Fatalf("cache get: %v", err)
+	} else if !ok || mv.Data != 1 {
+		t.Fatalf("cache value changed after commit failure: ok=%v data=%v", ok, mv.Data)
+	}
+	if got, ok, err := store.Get(ctx, "counter"); err != nil || !ok || got != 1 {
+		t.Fatalf("store value changed after commit failure: ok=%v err=%v val=%d", ok, err, got)
+	}
+}
+
+func TestWarpTxnDeleteRollbackOnQuorumFailure(t *testing.T) {
+	ctx := context.Background()
+	bus := newFakeQuorumBus()
+	store := adapter.NewInMemoryStore[int]()
+	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w.Register("counter", ModeStrongDistributed, time.Minute)
+
+	go func() {
+		bus.ackCh <- struct{}{}
+	}()
+	if err := w.Set(ctx, "counter", 1); err != nil {
+		t.Fatalf("set baseline: %v", err)
+	}
+
+	txn := w.Txn(ctx)
+	txn.Delete("counter")
+	bus.err = syncbus.ErrQuorumNotSatisfied
+	if err := txn.Commit(); !errors.Is(err, syncbus.ErrQuorumNotSatisfied) {
+		t.Fatalf("expected quorum failure, got %v", err)
+	}
+
+	if mv, ok, err := w.cache.Get(ctx, "counter"); err != nil {
+		t.Fatalf("cache get: %v", err)
+	} else if !ok || mv.Data != 1 {
+		t.Fatalf("cache value removed after delete failure: ok=%v data=%v", ok, mv.Data)
+	}
+	if got, ok, err := store.Get(ctx, "counter"); err != nil || !ok || got != 1 {
+		t.Fatalf("store value removed after delete failure: ok=%v err=%v val=%d", ok, err, got)
+	}
+}
+
+func TestWarpTxnRollbackMultiKeyOnQuorumFailure(t *testing.T) {
+	ctx := context.Background()
+	bus := newFakeQuorumBus()
+	store := adapter.NewInMemoryStore[int]()
+	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w.Register("counter", ModeStrongDistributed, time.Minute)
+	w.Register("mirror", ModeStrongDistributed, time.Minute)
+
+	go func() {
+		bus.ackCh <- struct{}{}
+	}()
+	if err := w.Set(ctx, "counter", 1); err != nil {
+		t.Fatalf("set counter baseline: %v", err)
+	}
+
+	go func() {
+		bus.ackCh <- struct{}{}
+	}()
+	if err := w.Set(ctx, "mirror", 1); err != nil {
+		t.Fatalf("set mirror baseline: %v", err)
+	}
+
+	txn := w.Txn(ctx)
+	txn.Set("counter", 2)
+	txn.Set("mirror", 5)
+
+	bus.mu.Lock()
+	bus.errSeq = []error{nil, syncbus.ErrQuorumNotSatisfied}
+	bus.mu.Unlock()
+
+	go func() {
+		bus.ackCh <- struct{}{}
+	}()
+
+	if err := txn.Commit(); !errors.Is(err, syncbus.ErrQuorumNotSatisfied) {
+		t.Fatalf("expected quorum failure, got %v", err)
+	}
+
+	if mv, ok, err := w.cache.Get(ctx, "counter"); err != nil {
+		t.Fatalf("cache get counter: %v", err)
+	} else if !ok || mv.Data != 1 {
+		t.Fatalf("counter cache changed after failure: ok=%v val=%v", ok, mv.Data)
+	}
+	if mv, ok, err := w.cache.Get(ctx, "mirror"); err != nil {
+		t.Fatalf("cache get mirror: %v", err)
+	} else if !ok || mv.Data != 1 {
+		t.Fatalf("mirror cache changed after failure: ok=%v val=%v", ok, mv.Data)
+	}
+
+	if got, ok, err := store.Get(ctx, "counter"); err != nil || !ok || got != 1 {
+		t.Fatalf("store counter changed after failure: ok=%v err=%v val=%d", ok, err, got)
+	}
+	if got, ok, err := store.Get(ctx, "mirror"); err != nil || !ok || got != 1 {
+		t.Fatalf("store mirror changed after failure: ok=%v err=%v val=%d", ok, err, got)
 	}
 }

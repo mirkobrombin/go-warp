@@ -414,21 +414,27 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	if reg.ttlStrategy != nil {
 		ttl = reg.ttlStrategy.TTL(key)
 	}
-	reg.mu.Lock()
-	reg.currentTTL = ttl
-	reg.lastAccess = now
-	reg.mu.Unlock()
-	if err := w.cache.Set(ctx, key, newVal, ttl); err != nil {
-		return err
-	}
-	if w.store != nil {
-		if err := w.store.Set(ctx, key, newVal.Data); err != nil {
+	applyLocal := func() error {
+		if err := w.cache.Set(ctx, key, newVal, ttl); err != nil {
 			return err
 		}
+		if w.store != nil {
+			if err := w.store.Set(ctx, key, newVal.Data); err != nil {
+				return err
+			}
+		}
+		reg.mu.Lock()
+		reg.currentTTL = ttl
+		reg.lastAccess = now
+		reg.mu.Unlock()
+		return nil
 	}
 
 	switch reg.mode {
 	case ModeEventualDistributed:
+		if err := applyLocal(); err != nil {
+			return err
+		}
 		if w.bus != nil {
 			go func() {
 				if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
@@ -445,6 +451,13 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 		}
 		quorum := reg.quorumSize()
 		if err := w.bus.PublishAndAwait(ctx, key, quorum); err != nil {
+			return err
+		}
+		if err := applyLocal(); err != nil {
+			return err
+		}
+	default:
+		if err := applyLocal(); err != nil {
 			return err
 		}
 	}
@@ -472,14 +485,21 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 	if !ok {
 		return ErrUnregistered
 	}
-	if err := w.cache.Invalidate(ctx, key); err != nil {
-		return err
+	applyLocal := func() error {
+		if err := w.cache.Invalidate(ctx, key); err != nil {
+			return err
+		}
+		if w.evictionCounter != nil {
+			w.evictionCounter.Inc()
+		}
+		return nil
 	}
-	if w.evictionCounter != nil {
-		w.evictionCounter.Inc()
-	}
+
 	switch reg.mode {
 	case ModeEventualDistributed:
+		if err := applyLocal(); err != nil {
+			return err
+		}
 		if w.bus != nil {
 			go func() {
 				if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
@@ -496,6 +516,13 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 		}
 		quorum := reg.quorumSize()
 		if err := w.bus.PublishAndAwait(ctx, key, quorum); err != nil {
+			return err
+		}
+		if err := applyLocal(); err != nil {
+			return err
+		}
+	default:
+		if err := applyLocal(); err != nil {
 			return err
 		}
 	}
@@ -650,7 +677,11 @@ func (t *Txn[T]) Commit() error {
 		}
 	}
 
+	var strongSetOps []func() error
+	var strongDeleteOps []func() error
+
 	for key, val := range t.sets {
+		keyCopy := key
 		shard := t.w.shard(key)
 		shard.RLock()
 		reg, ok := shard.regs[key]
@@ -685,28 +716,38 @@ func (t *Txn[T]) Commit() error {
 		if reg.ttlStrategy != nil {
 			ttl = reg.ttlStrategy.TTL(key)
 		}
-		reg.mu.Lock()
-		reg.currentTTL = ttl
-		reg.lastAccess = now
-		reg.mu.Unlock()
-		if err := t.w.cache.Set(ctx, key, newVal, ttl); err != nil {
-			return err
-		}
+		newValCopy := newVal
+		ttlCopy := ttl
+		nowCopy := now
+		regCopy := reg
 
-		if batch != nil {
-			if err := batch.Set(ctx, key, newVal.Data); err != nil {
+		applyLocal := func() error {
+			if err := t.w.cache.Set(ctx, keyCopy, newValCopy, ttlCopy); err != nil {
 				return err
 			}
-		} else if t.w.store != nil {
-			if err := t.w.store.Set(ctx, key, newVal.Data); err != nil {
-				return err
+			if batch != nil {
+				if err := batch.Set(ctx, keyCopy, newValCopy.Data); err != nil {
+					return err
+				}
+			} else if t.w.store != nil {
+				if err := t.w.store.Set(ctx, keyCopy, newValCopy.Data); err != nil {
+					return err
+				}
 			}
+			regCopy.mu.Lock()
+			regCopy.currentTTL = ttlCopy
+			regCopy.lastAccess = nowCopy
+			regCopy.mu.Unlock()
+			return nil
 		}
 
 		switch reg.mode {
 		case ModeEventualDistributed:
+			if err := applyLocal(); err != nil {
+				return err
+			}
 			if t.w.bus != nil {
-				if err := t.w.bus.Publish(ctx, key); err != nil {
+				if err := t.w.bus.Publish(ctx, keyCopy); err != nil {
 					return err
 				}
 			}
@@ -715,13 +756,19 @@ func (t *Txn[T]) Commit() error {
 				return ErrBusRequired
 			}
 			quorum := reg.quorumSize()
-			if err := t.w.bus.PublishAndAwait(ctx, key, quorum); err != nil {
+			if err := t.w.bus.PublishAndAwait(ctx, keyCopy, quorum); err != nil {
+				return err
+			}
+			strongSetOps = append(strongSetOps, applyLocal)
+		default:
+			if err := applyLocal(); err != nil {
 				return err
 			}
 		}
 	}
 
 	for key := range t.deletes {
+		keyCopy := key
 		metrics.InvalidateCounter.Inc()
 		shard := t.w.shard(key)
 		shard.RLock()
@@ -730,22 +777,28 @@ func (t *Txn[T]) Commit() error {
 		if !ok {
 			return ErrUnregistered
 		}
-		if err := t.w.cache.Invalidate(ctx, key); err != nil {
-			return err
-		}
-		if t.w.evictionCounter != nil {
-			t.w.evictionCounter.Inc()
-		}
-		if batch != nil {
-			if err := batch.Delete(ctx, key); err != nil {
+		applyLocal := func() error {
+			if err := t.w.cache.Invalidate(ctx, keyCopy); err != nil {
 				return err
 			}
+			if t.w.evictionCounter != nil {
+				t.w.evictionCounter.Inc()
+			}
+			if batch != nil {
+				if err := batch.Delete(ctx, keyCopy); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 
 		switch reg.mode {
 		case ModeEventualDistributed:
+			if err := applyLocal(); err != nil {
+				return err
+			}
 			if t.w.bus != nil {
-				if err := t.w.bus.Publish(ctx, key); err != nil {
+				if err := t.w.bus.Publish(ctx, keyCopy); err != nil {
 					return err
 				}
 			}
@@ -754,9 +807,26 @@ func (t *Txn[T]) Commit() error {
 				return ErrBusRequired
 			}
 			quorum := reg.quorumSize()
-			if err := t.w.bus.PublishAndAwait(ctx, key, quorum); err != nil {
+			if err := t.w.bus.PublishAndAwait(ctx, keyCopy, quorum); err != nil {
 				return err
 			}
+			strongDeleteOps = append(strongDeleteOps, applyLocal)
+		default:
+			if err := applyLocal(); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, op := range strongSetOps {
+		if err := op(); err != nil {
+			return err
+		}
+	}
+
+	for _, op := range strongDeleteOps {
+		if err := op(); err != nil {
+			return err
 		}
 	}
 

@@ -45,6 +45,29 @@ must return `syncbus.ErrQuorumUnsupported`. When the required number of
 replicas is not reached the call fails with `syncbus.ErrQuorumNotSatisfied`.
 Using strong distributed mode without a bus returns `core.ErrBusRequired`.
 
+#### Operational order and rollback
+
+Strong distributed operations defer cache and store mutations until the quorum acknowledgement succeeds. This prevents diverging replicas when the bus cannot deliver invalidations.
+
+Use this flow for keys registered with `ModeStrongDistributed` and a sync bus that implements `PublishAndAwait(context.Context, string, int) error`.
+
+1. Warp merges the incoming value and waits for `PublishAndAwait` to return the configured quorum.
+2. After the quorum succeeds, Warp updates the cache, store and TTL metadata.
+3. If the quorum call fails or the context expires, the previous cache and store contents remain unchanged and the bus error is returned.
+
+`Txn.Commit` stages all strong distributed mutations and applies them only after every quorum succeeds. When any quorum fails, none of the staged cache or store updates are written.
+
+```go
+bus := newFlakyBus() // returns syncbus.ErrQuorumNotSatisfied
+store := adapter.NewInMemoryStore[int]()
+w := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+w.Register("counter", core.ModeStrongDistributed, time.Minute)
+
+if err := w.Set(ctx, "counter", 1); err != nil {
+        // err is syncbus.ErrQuorumNotSatisfied and store/cache keep their previous values
+}
+```
+
 ## Basic Operations
 
 ```go
