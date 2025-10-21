@@ -2,6 +2,7 @@ package watchbus
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -107,4 +108,33 @@ func TestInMemoryWatchBusUnwatchUnknown(t *testing.T) {
 	if err := bus.Unwatch(ctx, "missing", ch); err != nil {
 		t.Fatalf("unwatch unexpected error: %v", err)
 	}
+}
+
+func TestInMemoryWatchBusConcurrentUnwatch(t *testing.T) {
+	bus := NewInMemory()
+	ctx := context.Background()
+	ch, err := bus.Watch(ctx, "foo")
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			if err := bus.Publish(ctx, "foo", []byte("data")); err != nil {
+				t.Errorf("publish: %v", err)
+				return
+			}
+		}
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+
+	if err := bus.Unwatch(ctx, "foo", ch); err != nil {
+		t.Fatalf("unwatch: %v", err)
+	}
+
+	wg.Wait()
 }
