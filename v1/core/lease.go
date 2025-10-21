@@ -2,12 +2,16 @@ package core
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	uuid "github.com/hashicorp/go-uuid"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
 )
+
+// ErrInvalidLeaseTTL is returned when a non-positive TTL is provided.
+var ErrInvalidLeaseTTL = errors.New("warp: lease ttl must be positive")
 
 type lease struct {
 	keys   map[string]struct{}
@@ -32,6 +36,9 @@ func newLeaseManager[T any](w *Warp[T], bus syncbus.Bus) *LeaseManager[T] {
 
 // Grant creates a new lease with the specified TTL and starts automatic renewal.
 func (lm *LeaseManager[T]) Grant(ctx context.Context, ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		return "", ErrInvalidLeaseTTL
+	}
 	id, err := uuid.GenerateUUID()
 	if err != nil {
 		return "", err
@@ -45,7 +52,11 @@ func (lm *LeaseManager[T]) Grant(ctx context.Context, ttl time.Duration) (string
 		lm.revoke(context.Background(), id, true)
 	})
 	// periodic renewal
-	l.ticker = time.NewTicker(ttl / 2)
+	interval := ttl / 2
+	if interval <= 0 {
+		interval = ttl
+	}
+	l.ticker = time.NewTicker(interval)
 	go func() {
 		for {
 			select {

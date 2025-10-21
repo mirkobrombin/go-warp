@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -46,6 +47,22 @@ func TestLeaseGrantAutoRenewAttachRevoke(t *testing.T) {
 	if _, ok, _ := w.cache.Get(ctx, key); ok {
 		t.Fatalf("cache key not invalidated on revoke")
 	}
+}
+
+func TestLeaseGrantRejectsNonPositiveTTL(t *testing.T) {
+	ctx := context.Background()
+	c := cache.NewInMemory[merge.Value[string]]()
+	w := New[string](c, nil, nil, merge.NewEngine[string]())
+
+	if _, err := w.leases.Grant(ctx, 0); !errors.Is(err, ErrInvalidLeaseTTL) {
+		t.Fatalf("expected ErrInvalidLeaseTTL, got %v", err)
+	}
+
+	w.leases.mu.Lock()
+	if len(w.leases.leases) != 0 {
+		t.Fatalf("expected no leases to be created for invalid ttl")
+	}
+	w.leases.mu.Unlock()
 }
 
 func TestLeaseBusRevocation(t *testing.T) {
