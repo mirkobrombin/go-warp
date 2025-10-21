@@ -23,9 +23,9 @@ type Cache[T any] struct {
 	order      *list.List
 	entries    map[string]*list.Element
 	maxEntries int
-	hits       uint64
-	misses     uint64
-	evictions  uint64
+	hits       atomic.Uint64
+	misses     atomic.Uint64
+	evictions  atomic.Uint64
 
 	hitCounter      prometheus.Counter
 	missCounter     prometheus.Counter
@@ -78,7 +78,7 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (merge.Value[T], bool, e
 	vv, ok, err := c.base.Get(ctx, key)
 	if err != nil || !ok {
 		if err == nil && !ok {
-			atomic.AddUint64(&c.misses, 1)
+			c.misses.Add(1)
 			if c.missCounter != nil {
 				c.missCounter.Inc()
 			}
@@ -91,13 +91,13 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (merge.Value[T], bool, e
 		c.order.MoveToFront(e)
 	}
 	c.mu.Unlock()
-	atomic.AddUint64(&c.hits, 1)
+	c.hits.Add(1)
 	if c.hitCounter != nil {
 		c.hitCounter.Inc()
 	}
 	v, vok := vv.Latest()
 	if !vok {
-		atomic.AddUint64(&c.misses, 1)
+		c.misses.Add(1)
 		if c.missCounter != nil {
 			c.missCounter.Inc()
 		}
@@ -110,7 +110,7 @@ func (c *Cache[T]) GetAt(ctx context.Context, key string, at time.Time) (merge.V
 	vv, ok, err := c.base.Get(ctx, key)
 	if err != nil || !ok {
 		if err == nil && !ok {
-			atomic.AddUint64(&c.misses, 1)
+			c.misses.Add(1)
 			if c.missCounter != nil {
 				c.missCounter.Inc()
 			}
@@ -125,12 +125,12 @@ func (c *Cache[T]) GetAt(ctx context.Context, key string, at time.Time) (merge.V
 	c.mu.Unlock()
 	v, vok := vv.At(at)
 	if vok {
-		atomic.AddUint64(&c.hits, 1)
+		c.hits.Add(1)
 		if c.hitCounter != nil {
 			c.hitCounter.Inc()
 		}
 	} else {
-		atomic.AddUint64(&c.misses, 1)
+		c.misses.Add(1)
 		if c.missCounter != nil {
 			c.missCounter.Inc()
 		}
@@ -165,7 +165,7 @@ func (c *Cache[T]) Set(ctx context.Context, key string, val merge.Value[T], ttl 
 				c.order.Remove(last)
 				delete(c.entries, k)
 				_ = c.base.Invalidate(context.Background(), k)
-				atomic.AddUint64(&c.evictions, 1)
+				c.evictions.Add(1)
 				if c.evictionCounter != nil {
 					c.evictionCounter.Inc()
 				}
@@ -197,9 +197,9 @@ type Metrics struct {
 // Metrics returns the collected metrics.
 func (c *Cache[T]) Metrics() Metrics {
 	return Metrics{
-		Hits:      atomic.LoadUint64(&c.hits),
-		Misses:    atomic.LoadUint64(&c.misses),
-		Evictions: atomic.LoadUint64(&c.evictions),
+		Hits:      c.hits.Load(),
+		Misses:    c.misses.Load(),
+		Evictions: c.evictions.Load(),
 	}
 }
 

@@ -23,8 +23,8 @@ type NATSBus struct {
 	subs      map[string]*natsSubscription
 	pending   map[string]struct{}
 	processed map[string]struct{}
-	published uint64
-	delivered uint64
+	published atomic.Uint64
+	delivered atomic.Uint64
 }
 
 // NewNATSBus returns a new NATSBus using the provided connection.
@@ -64,7 +64,7 @@ func (b *NATSBus) Publish(ctx context.Context, key string) error {
 	for {
 		err = b.conn.Publish(key, []byte(id))
 		if err == nil {
-			atomic.AddUint64(&b.published, 1)
+			b.published.Add(1)
 			break
 		}
 		_ = b.reconnect()
@@ -204,8 +204,8 @@ func (b *NATSBus) UnsubscribeLease(ctx context.Context, id string, ch chan struc
 // Metrics returns the published and delivered counts.
 func (b *NATSBus) Metrics() Metrics {
 	return Metrics{
-		Published: atomic.LoadUint64(&b.published),
-		Delivered: atomic.LoadUint64(&b.delivered),
+		Published: b.published.Load(),
+		Delivered: b.delivered.Load(),
 	}
 }
 
@@ -223,7 +223,7 @@ func (b *NATSBus) natsHandler(key string) nats.MsgHandler {
 		for _, c := range chans {
 			select {
 			case c <- struct{}{}:
-				atomic.AddUint64(&b.delivered, 1)
+				b.delivered.Add(1)
 			default:
 			}
 		}

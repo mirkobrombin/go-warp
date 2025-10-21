@@ -92,3 +92,29 @@ func TestCacheGlobalEviction(t *testing.T) {
 		t.Fatalf("expected 1 eviction got %d", m.Evictions)
 	}
 }
+
+func TestCacheMetricsCounters(t *testing.T) {
+	base := cache.NewInMemory[merge.VersionedValue[int]]()
+	c := New[int](base, 1)
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := c.Set(ctx, "present", merge.Value[int]{Data: 1, Timestamp: now}, time.Minute); err != nil {
+		t.Fatalf("set present: %v", err)
+	}
+	if _, ok, err := c.Get(ctx, "present"); err != nil || !ok {
+		t.Fatalf("expected cache hit, got ok=%v err=%v", ok, err)
+	}
+
+	if _, ok, err := c.Get(ctx, "missing"); err != nil || ok {
+		t.Fatalf("expected cache miss, got ok=%v err=%v", ok, err)
+	}
+
+	metrics := c.Metrics()
+	if metrics.Hits != 1 {
+		t.Fatalf("expected 1 hit, got %d", metrics.Hits)
+	}
+	if metrics.Misses != 1 {
+		t.Fatalf("expected 1 miss, got %d", metrics.Misses)
+	}
+}
