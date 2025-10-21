@@ -3,6 +3,7 @@ package watchbus
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -118,6 +119,61 @@ func TestSSEHandlerContextCancel(t *testing.T) {
 	if len(bus.subs["foo"]) != 0 {
 		bus.mu.Unlock()
 		t.Fatalf("expected watcher removed")
+	}
+	bus.mu.Unlock()
+}
+
+type failingWriter struct {
+	header http.Header
+}
+
+func newFailingWriter() *failingWriter {
+	return &failingWriter{header: make(http.Header)}
+}
+
+func (w *failingWriter) Header() http.Header       { return w.header }
+func (w *failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+func (w *failingWriter) WriteHeader(int)           {}
+func (w *failingWriter) Flush()                    {}
+
+func TestSSEHandlerWriteErrorUnwatches(t *testing.T) {
+	bus := NewInMemory()
+	handler := SSEHandler(bus)
+	req := httptest.NewRequest(http.MethodGet, "/?key=foo", nil)
+	resp := newFailingWriter()
+
+	done := make(chan struct{})
+	go func() {
+		handler(resp, req)
+		close(done)
+	}()
+
+	for i := 0; i < 100; i++ {
+		bus.mu.Lock()
+		if len(bus.subs["foo"]) == 1 {
+			bus.mu.Unlock()
+			break
+		}
+		bus.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := bus.Publish(context.Background(), "foo", []byte("hello")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not exit on write error")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	bus.mu.Lock()
+	if len(bus.subs["foo"]) != 0 {
+		bus.mu.Unlock()
+		t.Fatalf("expected watcher removed after write error")
 	}
 	bus.mu.Unlock()
 }
