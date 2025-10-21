@@ -70,10 +70,7 @@ func (b *InMemoryWatchBus) Publish(ctx context.Context, key string, data []byte)
 			return ctx.Err()
 		default:
 		}
-		select {
-		case ch <- data:
-		default:
-		}
+		safeSend(ch, data)
 	}
 	return nil
 }
@@ -114,12 +111,21 @@ func (b *InMemoryWatchBus) PublishPrefix(ctx context.Context, prefix string, dat
 			return ctx.Err()
 		default:
 		}
-		select {
-		case ch <- data:
-		default:
-		}
+		safeSend(ch, data)
 	}
 	return nil
+}
+
+func safeSend(ch chan []byte, data []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			// channel has been closed concurrently; drop the message
+		}
+	}()
+	select {
+	case ch <- data:
+	default:
+	}
 }
 
 // Watch subscribes to key and returns a channel receiving messages.
