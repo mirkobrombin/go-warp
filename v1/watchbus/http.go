@@ -17,11 +17,17 @@ func SSEHandler(bus WatchBus) http.HandlerFunc {
 			http.Error(w, "missing key", http.StatusBadRequest)
 			return
 		}
-		ch, err := bus.Watch(r.Context(), key)
+		ctx, cancel := context.WithCancel(r.Context())
+		ch, err := bus.Watch(ctx, key)
 		if err != nil {
+			cancel()
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		defer func() {
+			cancel()
+			_ = bus.Unwatch(context.Background(), key, ch)
+		}()
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -36,10 +42,11 @@ func SSEHandler(bus WatchBus) http.HandlerFunc {
 				if !ok {
 					return
 				}
-				fmt.Fprintf(w, "data: %s\n\n", msg)
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", msg); err != nil {
+					return
+				}
 				flusher.Flush()
-			case <-r.Context().Done():
-				_ = bus.Unwatch(context.Background(), key, ch)
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -62,10 +69,16 @@ func WebSocketHandler(bus WatchBus) http.HandlerFunc {
 			return
 		}
 		defer conn.Close()
-		ch, err := bus.Watch(r.Context(), key)
+		ctx, cancel := context.WithCancel(r.Context())
+		ch, err := bus.Watch(ctx, key)
 		if err != nil {
+			cancel()
 			return
 		}
+		defer func() {
+			cancel()
+			_ = bus.Unwatch(context.Background(), key, ch)
+		}()
 		for {
 			select {
 			case msg, ok := <-ch:
@@ -75,8 +88,7 @@ func WebSocketHandler(bus WatchBus) http.HandlerFunc {
 				if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 					return
 				}
-			case <-r.Context().Done():
-				_ = bus.Unwatch(context.Background(), key, ch)
+			case <-ctx.Done():
 				return
 			}
 		}
