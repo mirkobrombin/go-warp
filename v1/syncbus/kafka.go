@@ -22,8 +22,8 @@ type KafkaBus struct {
 	mu        sync.Mutex
 	subs      map[string]*kafkaSubscription
 	pending   map[string]struct{}
-	published uint64
-	delivered uint64
+	published atomic.Uint64
+	delivered atomic.Uint64
 }
 
 // NewKafkaBus creates a new KafkaBus connecting to the given brokers.
@@ -82,7 +82,7 @@ func (b *KafkaBus) Publish(ctx context.Context, key string) error {
 		b.mu.Unlock()
 		return err
 	}
-	atomic.AddUint64(&b.published, 1)
+	b.published.Add(1)
 	b.mu.Lock()
 	delete(b.pending, key)
 	b.mu.Unlock()
@@ -131,7 +131,7 @@ func (b *KafkaBus) dispatch(sub *kafkaSubscription, key string) {
 		for _, ch := range chans {
 			select {
 			case ch <- struct{}{}:
-				atomic.AddUint64(&b.delivered, 1)
+				b.delivered.Add(1)
 			default:
 			}
 		}
@@ -181,8 +181,8 @@ func (b *KafkaBus) UnsubscribeLease(ctx context.Context, id string, ch chan stru
 // Metrics returns the published and delivered counts.
 func (b *KafkaBus) Metrics() Metrics {
 	return Metrics{
-		Published: atomic.LoadUint64(&b.published),
-		Delivered: atomic.LoadUint64(&b.delivered),
+		Published: b.published.Load(),
+		Delivered: b.delivered.Load(),
 	}
 }
 

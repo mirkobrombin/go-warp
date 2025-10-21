@@ -33,8 +33,8 @@ type InMemoryCache[T any] struct {
 	mu            sync.RWMutex
 	items         map[string]item[T]
 	order         *list.List
-	hits          uint64
-	misses        uint64
+	hits          atomic.Uint64
+	misses        atomic.Uint64
 	sweepInterval time.Duration
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -145,7 +145,7 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 	it, ok := c.items[key]
 	if !ok {
 		c.mu.Unlock()
-		atomic.AddUint64(&c.misses, 1)
+		c.misses.Add(1)
 		if c.missCounter != nil {
 			c.missCounter.Inc()
 		}
@@ -158,7 +158,7 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		c.order.Remove(it.element)
 		delete(c.items, key)
 		c.mu.Unlock()
-		atomic.AddUint64(&c.misses, 1)
+		c.misses.Add(1)
 		if c.missCounter != nil {
 			c.missCounter.Inc()
 		}
@@ -178,7 +178,7 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		return zero, false, ctx.Err()
 	default:
 	}
-	atomic.AddUint64(&c.hits, 1)
+	c.hits.Add(1)
 	if c.hitCounter != nil {
 		c.hitCounter.Inc()
 	}
@@ -318,8 +318,8 @@ func (c *InMemoryCache[T]) Metrics() Stats {
 	size := len(c.items)
 	c.mu.RUnlock()
 	return Stats{
-		Hits:   atomic.LoadUint64(&c.hits),
-		Misses: atomic.LoadUint64(&c.misses),
+		Hits:   c.hits.Load(),
+		Misses: c.misses.Load(),
 		Size:   size,
 	}
 }

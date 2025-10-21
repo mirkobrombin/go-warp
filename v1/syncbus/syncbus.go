@@ -31,8 +31,8 @@ type InMemoryBus struct {
 	mu        sync.Mutex
 	subs      map[string][]chan struct{}
 	pending   map[string]struct{}
-	published uint64
-	delivered uint64
+	published atomic.Uint64
+	delivered atomic.Uint64
 }
 
 // NewInMemoryBus returns a new InMemoryBus.
@@ -69,7 +69,7 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 		}
 	}
 
-	atomic.AddUint64(&b.published, 1)
+	b.published.Add(1)
 	for _, ch := range chans {
 		select {
 		case <-ctx.Done():
@@ -81,7 +81,7 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 		}
 		select {
 		case ch <- struct{}{}:
-			atomic.AddUint64(&b.delivered, 1)
+			b.delivered.Add(1)
 		default:
 		}
 	}
@@ -139,7 +139,7 @@ func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas 
 		}
 		select {
 		case ch <- struct{}{}:
-			atomic.AddUint64(&b.delivered, 1)
+			b.delivered.Add(1)
 			delivered++
 		default:
 		}
@@ -152,7 +152,7 @@ func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas 
 	if delivered < replicas {
 		return ErrQuorumNotSatisfied
 	}
-	atomic.AddUint64(&b.published, 1)
+	b.published.Add(1)
 	return nil
 }
 
@@ -223,7 +223,7 @@ type Metrics struct {
 
 func (b *InMemoryBus) Metrics() Metrics {
 	return Metrics{
-		Published: atomic.LoadUint64(&b.published),
-		Delivered: atomic.LoadUint64(&b.delivered),
+		Published: b.published.Load(),
+		Delivered: b.delivered.Load(),
 	}
 }

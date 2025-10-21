@@ -14,8 +14,8 @@ type AdaptiveCache[T any] struct {
 	lfu Cache[T]
 
 	useLFU atomic.Bool
-	hits   uint64
-	misses uint64
+	hits   atomic.Uint64
+	misses atomic.Uint64
 
 	switchEvery uint64
 }
@@ -43,17 +43,17 @@ func (a *AdaptiveCache[T]) selectCache() Cache[T] {
 }
 
 func (a *AdaptiveCache[T]) adjust() {
-	total := atomic.LoadUint64(&a.hits) + atomic.LoadUint64(&a.misses)
+	total := a.hits.Load() + a.misses.Load()
 	if total < a.switchEvery {
 		return
 	}
-	if atomic.LoadUint64(&a.misses) > atomic.LoadUint64(&a.hits) {
+	if a.misses.Load() > a.hits.Load() {
 		a.useLFU.Store(true)
 	} else {
 		a.useLFU.Store(false)
 	}
-	atomic.StoreUint64(&a.hits, 0)
-	atomic.StoreUint64(&a.misses, 0)
+	a.hits.Store(0)
+	a.misses.Store(0)
 }
 
 // Get implements Cache.Get.
@@ -64,9 +64,9 @@ func (a *AdaptiveCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		return zero, false, err
 	}
 	if ok {
-		atomic.AddUint64(&a.hits, 1)
+		a.hits.Add(1)
 	} else {
-		atomic.AddUint64(&a.misses, 1)
+		a.misses.Add(1)
 	}
 	a.adjust()
 	return v, ok, nil

@@ -28,8 +28,8 @@ type RedisBus struct {
 	subs      map[string]*redisSubscription
 	pending   map[string]struct{}
 	processed map[string]struct{}
-	published uint64
-	delivered uint64
+	published atomic.Uint64
+	delivered atomic.Uint64
 }
 
 // NewRedisBus returns a new RedisBus using the provided Redis client.
@@ -80,7 +80,7 @@ func (b *RedisBus) Publish(ctx context.Context, key string) error {
 		err = b.client.Publish(cctx, key, id).Err()
 		cancel()
 		if err == nil {
-			atomic.AddUint64(&b.published, 1)
+			b.published.Add(1)
 			break
 		}
 		if stdErrors.Is(err, context.DeadlineExceeded) {
@@ -198,7 +198,7 @@ func (b *RedisBus) PublishAndAwait(ctx context.Context, key string, replicas int
 	if int(delivered) < replicas {
 		return ErrQuorumNotSatisfied
 	}
-	atomic.AddUint64(&b.published, 1)
+	b.published.Add(1)
 	return nil
 }
 
@@ -277,7 +277,7 @@ func (b *RedisBus) dispatch(key string, sub *redisSubscription) {
 		for _, ch := range chans {
 			select {
 			case ch <- struct{}{}:
-				atomic.AddUint64(&b.delivered, 1)
+				b.delivered.Add(1)
 			default:
 			}
 		}
@@ -342,8 +342,8 @@ func (b *RedisBus) UnsubscribeLease(ctx context.Context, id string, ch chan stru
 // Metrics returns the published and delivered counts.
 func (b *RedisBus) Metrics() Metrics {
 	return Metrics{
-		Published: atomic.LoadUint64(&b.published),
-		Delivered: atomic.LoadUint64(&b.delivered),
+		Published: b.published.Load(),
+		Delivered: b.delivered.Load(),
 	}
 }
 
