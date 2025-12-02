@@ -31,7 +31,27 @@ for connection pooling and context-aware operations:
 
 ```go
 client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-store := adapter.NewRedisStore[string](client)
+store := adapter.NewRedisStore[string](client, adapter.WithTimeout(5*time.Second))
+```
+
+#### Options
+
+- **`WithTimeout(d time.Duration)`**: Sets the operation timeout for Redis calls.
+
+## Batch Operations
+
+Stores that support batching implement the `Batcher` interface.
+
+```go
+type Batcher[T any] interface {
+    Batch(ctx context.Context) (Batch[T], error)
+}
+
+type Batch[T any] interface {
+    Set(ctx context.Context, key string, value T) error
+    Delete(ctx context.Context, key string) error
+    Commit(ctx context.Context) error
+}
 ```
 
 The store can then be passed to `core.New` so that Warp reads and writes

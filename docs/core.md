@@ -1,150 +1,162 @@
 # Warp Core
 
-The `core` package provides the primary API used by applications. It coordinates the cache, storage adapter, sync bus and merge engine to provide fast and controlled access to data.
+The `core` package is the heart of Warp. It orchestrates the interaction between the **Cache**, **Storage Adapter**, **Sync Bus**, and **Merge Engine**.
 
-## Registration
+## Architecture
 
-Each key must be registered with a consistency mode and TTL:
-
-```go
-w := core.New[string](cache.NewInMemory[merge.Value[string]](), adapter.NewInMemoryStore[string](), nil, merge.NewEngine[string]())
-w.Register("greeting", core.ModeStrongLocal, time.Minute)
+```mermaid
+graph TD
+    App[Application] --> Core[Warp Core]
+    Core --> Cache[L1 Cache (Memory/Redis)]
+    Core --> Store[L2 Store (DB/S3)]
+    Core --> Bus[Sync Bus (NATS/Kafka)]
+    Core --> Merge[Merge Engine]
+    
+    Bus -.->|Invalidations| Core
 ```
 
-To remove a registration, call `Unregister`:
+## API Reference
+
+### `New`
+
+Creates a new Warp instance.
 
 ```go
-w.Unregister("greeting")
+func New[T any](
+    c cache.Cache[merge.Value[T]], 
+    s adapter.Store[T], 
+    bus syncbus.Bus, 
+    m *merge.Engine[T], 
+    opts ...Option[T],
+) *Warp[T]
 ```
 
-The available modes are summarized below:
+- **c**: The L1 cache implementation.
+- **s**: The L2 storage adapter.
+- **bus**: The sync bus for distributed events (can be `nil` for local-only).
+- **m**: The merge engine (can be `nil`, defaults to Last-Write-Wins).
 
-| Mode | Behavior | Sync Bus | Store | Default |
-| ---- | -------- | -------- | ----- | ------- |
-| `ModeStrongLocal` | Data is kept locally with optional fallback to the store. | Not used | Optional | No |
-| `ModeEventualDistributed` | Invalidations are propagated asynchronously via the sync bus. | Required | Required | No |
-| `ModeStrongDistributed` | Reserved for quorum based writes. | Required | Required | No |
+### `Register`
 
-There is no default mode; each key must explicitly choose one when registered.
-
-### Strong Distributed Quorum
-
-Strong distributed registrations coordinate writes through the sync bus.
-`Set`, `Invalidate` and transactional commits block until the configured
-quorum acknowledges the invalidation event. The default quorum is `1` and can
-be increased with `SetQuorum`:
+Registers a key pattern with a consistency mode and TTL. **Required** before using any key.
 
 ```go
-w.Register("orders", core.ModeStrongDistributed, time.Minute)
-w.SetQuorum("orders", 3) // wait for three replicas
+func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration, opts ...cache.TTLOption) bool
 ```
 
-Warp requires a bus implementation that supports quorum acknowledgements via
-`PublishAndAwait`. If the configured bus does not expose quorum semantics it
-must return `syncbus.ErrQuorumUnsupported`. When the required number of
-replicas is not reached the call fails with `syncbus.ErrQuorumNotSatisfied`.
-Using strong distributed mode without a bus returns `core.ErrBusRequired`.
+- **key**: The exact key string (patterns not yet supported in v1).
+- **mode**: `ModeStrongLocal`, `ModeEventualDistributed`, or `ModeStrongDistributed`.
+- **ttl**: Duration after which the item expires from L1 cache.
 
-#### Operational order and rollback
+### `RegisterDynamicTTL`
 
-Strong distributed operations defer cache and store mutations until the quorum acknowledgement succeeds. This prevents diverging replicas when the bus cannot deliver invalidations.
-
-Use this flow for keys registered with `ModeStrongDistributed` and a sync bus that implements `PublishAndAwait(context.Context, string, int) error`.
-
-1. Warp merges the incoming value and waits for `PublishAndAwait` to return the configured quorum.
-2. After the quorum succeeds, Warp updates the cache, store and TTL metadata.
-3. If the quorum call fails or the context expires, the previous cache and store contents remain unchanged and the bus error is returned.
-
-`Txn.Commit` stages all strong distributed mutations and applies them only after every quorum succeeds. When any quorum fails, none of the staged cache or store updates are written.
+Registers a key with a dynamic TTL strategy (e.g., Adaptive TTL).
 
 ```go
-bus := newFlakyBus() // returns syncbus.ErrQuorumNotSatisfied
-store := adapter.NewInMemoryStore[int]()
-w := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
-w.Register("counter", core.ModeStrongDistributed, time.Minute)
-
-if err := w.Set(ctx, "counter", 1); err != nil {
-        // err is syncbus.ErrQuorumNotSatisfied and store/cache keep their previous values
-}
+func (w *Warp[T]) RegisterDynamicTTL(key string, mode Mode, strat cache.TTLStrategy, opts ...cache.TTLOption) bool
 ```
 
-## Basic Operations
+### `SetQuorum`
+
+Configures the required quorum for `ModeStrongDistributed`.
 
 ```go
-ctx := context.Background()
-if err := w.Set(ctx, "greeting", "hello"); err != nil {
-    // handle error
-}
-value, err := w.Get(ctx, "greeting")
-w.Invalidate(ctx, "greeting")
+func (w *Warp[T]) SetQuorum(key string, replicas int) bool
 ```
 
-`Get` falls back to the storage adapter on miss. `Set` stores the value, applies merge strategies and publishes invalidations when required.
+### `Get`
 
-## Custom Merge Functions
-
-Custom merge functions can be registered per key through the merge engine:
+Retrieves a value.
 
 ```go
-w.Merge("counter", func(old, new int) (int, error) {
-    return old + new, nil
-})
+func (w *Warp[T]) Get(ctx context.Context, key string) (T, error)
 ```
 
-## Transactions
+- Returns `ErrNotFound` if key is missing in both Cache and Store.
+- Returns `ErrUnregistered` if key was not registered.
 
-Transactions batch multiple operations and apply them atomically. They can
-mix `Set`, `Delete` and CAS checks while still benefiting from custom merge
-functions:
+### `Set`
+
+Updates a value.
 
 ```go
-ctx := context.Background()
-w.Merge("counter", func(old, new int) (int, error) {
-    return old + new, nil
-})
-w.Merge("logs", func(old, new []string) ([]string, error) {
-    return append(old, new...), nil
-})
+func (w *Warp[T]) Set(ctx context.Context, key string, value T) error
+```
+
+- Applies Merge logic if registered.
+- Updates Cache and Store.
+- Propagates invalidation (or waits for quorum) based on Mode.
+
+### `Invalidate`
+
+Removes a value from Cache (and effectively "deletes" it if your Store supports deletion semantics, though `Invalidate` is primarily a cache operation).
+
+```go
+func (w *Warp[T]) Invalidate(ctx context.Context, key string) error
+```
+
+### `Warmup`
+
+Loads all registered keys from the Store into the Cache.
+
+```go
+func (w *Warp[T]) Warmup(ctx context.Context)
+```
+
+### `Txn` (Transactions)
+
+Starts a new transaction.
+
+```go
 txn := w.Txn(ctx)
-txn.Set("counter", 1)
-txn.Set("logs", []string{"start"})
-txn.Delete("obsolete")
-txn.Delete("temp")
-txn.CompareAndSwap("status", "draft", "live")
-if err := txn.Commit(); err != nil {
-    // handle error
-}
+txn.Set("k1", "v1")
+txn.Delete("k2")
+txn.CompareAndSwap("k3", "old", "new")
+err := txn.Commit()
 ```
 
-## Warmup and Validation
+- **Commit**: Applies all operations atomically. If using `ModeStrongDistributed`, it waits for quorum for *all* keys before applying *any*.
 
-`Warmup` preloads registered keys from the storage adapter during boot. The `Validator` allows running background consistency checks:
+### `Unregister`
 
 ```go
-w.Warmup(ctx)
-validator := w.Validator(validator.ModeAlert, time.Minute)
-go validator.Run(ctx)
+func (w *Warp[T]) Unregister(key string)
 ```
+Removes a key registration.
 
-See the [overview](overview.md) for the list of modules and the individual documents for more details.
+### `GetAt` (Versioned Cache)
+
+```go
+func (w *Warp[T]) GetAt(ctx context.Context, key string, at time.Time) (T, error)
+```
+Retrieves the value for a key at a specific point in time. Requires `merge.Value` to be used as the cache type.
+
+### `PublishErrors`
+
+```go
+func (w *Warp[T]) PublishErrors() <-chan error
+```
+Returns a channel to listen for asynchronous errors occurring during background invalidation publishing.
+
+### `WithMetrics`
+
+```go
+func WithMetrics[T any](reg prometheus.Registerer) Option[T]
+```
+Enables Prometheus metrics collection for core operations.
+
+### `GrantLease` / `RevokeLease`
+
+See [Leases](leases.md).
+
+## Consistency Modes
+
+| Mode | Behavior | Use Case |
+| :--- | :--- | :--- |
+| **`ModeStrongLocal`** | Data is consistent *on this node*. No network calls on write. | Local counters, temporary processing data. |
+| **`ModeEventualDistributed`** | Writes are local, but invalidations are sent to other nodes asynchronously. | **Default**. User profiles, sessions. |
+| **`ModeStrongDistributed`** | Writes wait for a quorum of nodes to acknowledge. | Critical configuration, distributed locks. |
 
 ## Metrics
 
-`core` can expose Prometheus metrics for cache hits, misses, evictions and operation latency. Create a registry with
-`metrics.NewRegistry` and enable metrics on both the cache and core:
-
-```go
-reg := metrics.NewRegistry()
-c := cache.NewInMemory[merge.Value[string]](cache.WithMetrics[merge.Value[string]](reg))
-w := core.New[string](c, adapter.NewInMemoryStore[string](), nil, merge.NewEngine[string](), core.WithMetrics[string](reg))
-http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-```
-
-Prometheus scraping example:
-
-```yaml
-scrape_configs:
-  - job_name: "warp"
-    static_configs:
-      - targets: ["localhost:2112"]
-```
+Warp exposes Prometheus metrics. See [Metrics](metrics.md).

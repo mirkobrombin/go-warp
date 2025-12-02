@@ -1,33 +1,39 @@
-# [Leases](glossary.md#leases)
+# Leases
 
-Warp includes a simple lease manager that allows grouping keys under a
-revocable lease. Leases are renewed periodically until explicitly
-revoked or the process stops.
+Leases provide a mechanism to group multiple keys under a single revocable token.
 
-## Granting a Lease
+## API Reference
 
-```go
-id, err := w.GrantLease(ctx, time.Minute)
-if err != nil {
-    // handle error
-}
-```
-
-## Attaching Keys
-
-Keys can be associated with a lease. When the lease is revoked the keys
-are invalidated locally and the revocation is propagated through the
-[syncbus](syncbus.md).
+### `GrantLease`
 
 ```go
-w.AttachKey(id, "example")
+func (w *Warp[T]) GrantLease(ctx context.Context, ttl time.Duration) (string, error)
 ```
+Creates a new lease and returns its unique ID.
+- **ttl**: Duration after which the lease expires automatically (if not revoked).
 
-## Revoking
+### `AttachKey`
 
 ```go
-w.RevokeLease(ctx, id)
+func (w *Warp[T]) AttachKey(leaseID, key string)
 ```
+Associates a cache key with a lease.
+- **Note**: A key can be attached to multiple leases. If *any* of them is revoked, the key is invalidated.
 
-All nodes subscribed to the same lease will receive the revocation event
-and invalidate the attached keys.
+### `RevokeLease`
+
+```go
+func (w *Warp[T]) RevokeLease(ctx context.Context, leaseID string)
+```
+Invalidates the lease. This triggers an invalidation for **all** keys currently attached to this lease, across the entire cluster.
+
+## Use Cases
+
+### 1. User Session Management
+Invalidate all user data (profile, settings, session) on logout.
+
+### 2. Feature Flags
+Invalidate all configuration keys when a feature flag changes.
+
+### 3. Multi-Tenancy
+Clear all data for a specific tenant.
