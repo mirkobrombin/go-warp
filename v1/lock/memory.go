@@ -43,13 +43,21 @@ func (l *InMemory) ensureSubscriptions(key string) error {
 	l.subs[key] = struct{}{}
 	l.mu.Unlock()
 
+	cleanup := func() {
+		l.mu.Lock()
+		delete(l.subs, key)
+		l.mu.Unlock()
+	}
+
 	lockCh, err := l.bus.Subscribe(context.Background(), "lock:"+key)
 	if err != nil {
+		cleanup()
 		return err
 	}
 	unlockCh, err := l.bus.Subscribe(context.Background(), "unlock:"+key)
 	if err != nil {
 		_ = l.bus.Unsubscribe(context.Background(), "lock:"+key, lockCh)
+		cleanup()
 		return err
 	}
 
@@ -96,6 +104,7 @@ func (l *InMemory) TryLock(ctx context.Context, key string, ttl time.Duration) (
 	}
 	l.locks[key] = st
 	l.mu.Unlock()
+	_ = l.bus.Publish(ctx, "lock:"+key)
 	return true, nil
 }
 
