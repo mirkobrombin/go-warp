@@ -270,25 +270,57 @@ func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
 }
 
 // sweeper periodically removes expired items from the cache.
+// It uses a probabilistic approach similar to Redis *to avoid locking the map for too long.
+// * At least it tries...
 func (c *InMemoryCache[T]) sweeper() {
 	defer c.wg.Done()
 	ticker := time.NewTicker(c.sweepInterval)
 	defer ticker.Stop()
+
+	// Constants for the probabilistic expiration algorithm
+	const (
+		sampleSize    = 20
+		evictionRatio = 0.25 // If > 25% of sample is expired, repeat
+	)
+
 	for {
 		select {
 		case <-ticker.C:
-			now := time.Now()
-			c.mu.Lock()
-			for k, it := range c.items {
-				if !it.expiresAt.IsZero() && now.After(it.expiresAt) {
-					c.order.Remove(it.element)
-					delete(c.items, k)
-					if c.evictionCounter != nil {
-						c.evictionCounter.Inc()
+			for {
+				expiredCount := 0
+				checkedCount := 0
+				now := time.Now()
+
+				c.mu.Lock()
+				// If cache is empty, nothing to do
+				if len(c.items) == 0 {
+					c.mu.Unlock()
+					break
+				}
+
+				for k, it := range c.items {
+					checkedCount++
+					if !it.expiresAt.IsZero() && now.After(it.expiresAt) {
+						c.order.Remove(it.element)
+						delete(c.items, k)
+						if c.evictionCounter != nil {
+							c.evictionCounter.Inc()
+						}
+						expiredCount++
+					}
+					// Stop after checking sampleSize
+					if checkedCount >= sampleSize {
+						break
 					}
 				}
+				c.mu.Unlock()
+
+				// If we expired fewer than the ratio, we assume most keys are valid and stop.
+				// Otherwise, we repeat immediately to aggressively clean up.
+				if float64(expiredCount) < float64(sampleSize)*evictionRatio {
+					break
+				}
 			}
-			c.mu.Unlock()
 		case <-c.ctx.Done():
 			return
 		}

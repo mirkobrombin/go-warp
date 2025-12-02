@@ -11,16 +11,35 @@ import (
 	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
 )
 
-const redisOpTimeout = 5 * time.Second
+const defaultRedisOpTimeout = 5 * time.Second
 
 // RedisStore implements Store using a Redis backend.
 type RedisStore[T any] struct {
-	client *redis.Client
+	client  *redis.Client
+	timeout time.Duration
+}
+
+// RedisOption configures a RedisStore.
+type RedisOption func(*redisStoreOptions)
+
+type redisStoreOptions struct {
+	timeout time.Duration
+}
+
+// WithTimeout sets the operation timeout for Redis calls.
+func WithTimeout(d time.Duration) RedisOption {
+	return func(o *redisStoreOptions) {
+		o.timeout = d
+	}
 }
 
 // NewRedisStore returns a new RedisStore using the provided Redis client.
-func NewRedisStore[T any](client *redis.Client) *RedisStore[T] {
-	return &RedisStore[T]{client: client}
+func NewRedisStore[T any](client *redis.Client, opts ...RedisOption) *RedisStore[T] {
+	o := redisStoreOptions{timeout: defaultRedisOpTimeout}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return &RedisStore[T]{client: client, timeout: o.timeout}
 }
 
 // Get implements Store.Get.
@@ -32,7 +51,7 @@ func (s *RedisStore[T]) Get(ctx context.Context, key string) (T, bool, error) {
 		}
 		return zero, false, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	cctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	data, err := s.client.Get(cctx, key).Bytes()
 	if err == redis.Nil {
@@ -72,7 +91,7 @@ func (s *RedisStore[T]) Set(ctx context.Context, key string, value T) error {
 	if err != nil {
 		return err
 	}
-	cctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	cctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	if err := s.client.Set(cctx, key, data, 0).Err(); err != nil {
 		if stdErrors.Is(err, context.DeadlineExceeded) {
@@ -94,7 +113,7 @@ func (s *RedisStore[T]) Keys(ctx context.Context) ([]string, error) {
 		}
 		return nil, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	cctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	var cursor uint64
 	var keys []string
@@ -152,7 +171,7 @@ func (b *redisBatch[T]) Commit(ctx context.Context) error {
 		}
 		return err
 	}
-	cctx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	cctx, cancel := context.WithTimeout(ctx, b.s.timeout)
 	defer cancel()
 	pipe := b.s.client.TxPipeline()
 	for k, v := range b.sets {
