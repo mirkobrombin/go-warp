@@ -1,72 +1,83 @@
 # Sync Bus
 
-The `syncbus` package provides a pluggable mechanism to propagate invalidations across nodes (see [Sync Bus](glossary.md#sync-bus)).
+The `syncbus` module propagates invalidation events and coordinates distributed operations.
 
-## Bus Interface
+## API Reference
+
+### Constructors
+
+#### `NewInMemoryBus`
+```go
+func NewInMemoryBus() *InMemoryBus
+```
+Creates a local bus. Useful for testing or single-node async architectures.
+
+#### `NewNATSBus`
+```go
+func NewNATSBus(nc *nats.Conn, subject string) *NATSBus
+```
+Wraps a NATS connection.
+- **nc**: Connected NATS client.
+- **subject**: NATS subject to publish/subscribe to (e.g., "warp.events").
+
+#### `NewKafkaBus`
+```go
+func NewKafkaBus(producer sarama.SyncProducer, consumer sarama.ConsumerGroup, topic string) *KafkaBus
+```
+Wraps a Sarama Kafka producer/consumer.
+
+#### `NewRedisBus`
+```go
+func NewRedisBus(client *redis.Client, channel string) *RedisBus
+```
+Wraps a Go-Redis client using Pub/Sub.
+
+### `Bus` Interface
 
 ```go
 type Bus interface {
+    // Publish broadcasts an invalidation for key.
     Publish(ctx context.Context, key string) error
+
+    // PublishAndAwait broadcasts and waits for 'replicas' acknowledgements.
+    // Returns ErrQuorumNotSatisfied if timeout/failure.
     PublishAndAwait(ctx context.Context, key string, replicas int) error
+
+    // Subscribe returns a channel that receives events for key.
     Subscribe(ctx context.Context, key string) (chan struct{}, error)
+
+    // Unsubscribe stops listening.
     Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
+
+    // Lease methods
+    RevokeLease(ctx context.Context, id string) error
+    SubscribeLease(ctx context.Context, id string) (chan struct{}, error)
+    UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error
 }
 ```
 
-Subscriptions are automatically cleaned up when the context passed to
-`Subscribe` is done, but can also be explicitly removed via
-`Unsubscribe`.
-
-`PublishAndAwait` is used by strong distributed mode to block until a quorum
-of replicas confirms the invalidation. Implementations that cannot report
-acknowledgements must return `syncbus.ErrQuorumUnsupported`.
-
-## In-Memory Bus
-
-`InMemoryBus` is a local implementation mainly for development and tests. It deduplicates events and exposes basic metrics:
+### `Metrics`
 
 ```go
-bus := syncbus.NewInMemoryBus()
-ch, _ := bus.Subscribe(ctx, "greeting")
-defer bus.Unsubscribe(ctx, "greeting", ch)
-go func() { for range ch { fmt.Println("invalidated") } }()
-_ = bus.Publish(ctx, "greeting")
-metrics := bus.Metrics() // Published, Delivered
+type Metrics struct {
+    Published uint64
+    Delivered uint64
+}
+
+func (b *InMemoryBus) Metrics() Metrics
 ```
+Returns statistics about published and delivered messages (InMemoryBus only).
 
-## [NATS Bus](glossary.md#nats)
+### Errors
 
-`NATSBus` uses [NATS](https://nats.io/) subjects (one per key) to propagate events:
+- **`ErrQuorumUnsupported`**: Returned if the bus implementation does not support quorum (e.g., simple pub/sub).
+- **`ErrQuorumNotSatisfied`**: Returned by `PublishAndAwait` if the required number of acknowledgements is not received.
 
-```go
-// connect using nats.go
-nc, _ := nats.Connect("nats://localhost:4222")
-bus := syncbus.NewNATSBus(nc)
-ch, _ := bus.Subscribe(ctx, "greeting")
-go func() { for range ch { fmt.Println("invalidated") } }()
-_ = bus.Publish(ctx, "greeting")
-```
+## How It Works
 
-## [Kafka Bus](glossary.md#kafka)
+When you perform a `Set` or `Invalidate` operation in a distributed mode:
 
-`KafkaBus` publishes to Kafka topics named after each key and consumes from partition 0:
-
-```go
-cfg := sarama.NewConfig()
-cfg.Version = sarama.V2_0_0_0
-bus, _ := syncbus.NewKafkaBus([]string{"localhost:9092"}, cfg)
-ch, _ := bus.Subscribe(ctx, "greeting")
-go func() { for range ch { fmt.Println("invalidated") } }()
-_ = bus.Publish(ctx, "greeting")
-```
-
-## Error Handling
-
-Warp propagates publish errors from the bus to callers. Operations like
-`Set` or `Invalidate` return the underlying error when the bus cannot
-publish an event. Subscribe failures are treated as best effort: if Warp
-cannot subscribe (for example while granting a lease), the operation
-continues without the subscription, and events for that key may be
-missed.
-
-Other adapters (e.g. Redis Streams) can be built on top of the same interface.
+1. Warp publishes an event to the bus.
+2. The payload contains the `key` and the operation type.
+3. All other nodes subscribed to the bus receive the event.
+4. They apply the invalidation locally (removing the key from their L1 cache).
