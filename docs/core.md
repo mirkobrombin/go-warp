@@ -7,9 +7,9 @@ The `core` package is the heart of Warp. It orchestrates the interaction between
 ```mermaid
 graph TD
     App[Application] --> Core[Warp Core]
-    Core --> Cache[L1 Cache (Memory/Redis)]
-    Core --> Store[L2 Store (DB/S3)]
-    Core --> Bus[Sync Bus (NATS/Kafka)]
+    Core --> Cache["L1 Cache (Memory/Redis)"]
+    Core --> Store["L2 Store (DB/S3)"]
+    Core --> Bus["Sync Bus (NATS/Kafka)"]
     Core --> Merge[Merge Engine]
     
     Bus -.->|Invalidations| Core
