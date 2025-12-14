@@ -12,7 +12,7 @@ import (
 
 type kafkaSubscription struct {
 	pc    sarama.PartitionConsumer
-	chans []chan struct{}
+	chans []chan Event
 }
 
 // KafkaBus implements Bus using a Kafka backend.
@@ -55,7 +55,7 @@ func NewKafkaBus(brokers []string, cfg *sarama.Config) (*KafkaBus, error) {
 }
 
 // Publish implements Bus.Publish.
-func (b *KafkaBus) Publish(ctx context.Context, key string) error {
+func (b *KafkaBus) Publish(ctx context.Context, key string, opts ...PublishOption) error {
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
@@ -91,16 +91,22 @@ func (b *KafkaBus) Publish(ctx context.Context, key string) error {
 
 // PublishAndAwait implements Bus.PublishAndAwait. Kafka sync producer does not expose
 // subscriber replication acknowledgements at this level, so quorum is unsupported.
-func (b *KafkaBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+func (b *KafkaBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...PublishOption) error {
 	if replicas <= 1 {
-		return b.Publish(ctx, key)
+		return b.Publish(ctx, key, opts...)
 	}
 	return ErrQuorumUnsupported
 }
 
+// PublishAndAwaitTopology implements Bus.PublishAndAwaitTopology.
+func (b *KafkaBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...PublishOption) error {
+	// Kafka does not easily support this synchronous topology check.
+	return ErrQuorumUnsupported
+}
+
 // Subscribe implements Bus.Subscribe.
-func (b *KafkaBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
-	ch := make(chan struct{}, 1)
+func (b *KafkaBus) Subscribe(ctx context.Context, key string) (<-chan Event, error) {
+	ch := make(chan Event, 1)
 	b.mu.Lock()
 	sub := b.subs[key]
 	if sub == nil {
@@ -126,11 +132,13 @@ func (b *KafkaBus) Subscribe(ctx context.Context, key string) (chan struct{}, er
 func (b *KafkaBus) dispatch(sub *kafkaSubscription, key string) {
 	for range sub.pc.Messages() {
 		b.mu.Lock()
-		chans := append([]chan struct{}(nil), b.subs[key].chans...)
+		chans := append([]chan Event(nil), b.subs[key].chans...)
 		b.mu.Unlock()
+
+		evt := Event{Key: key}
 		for _, ch := range chans {
 			select {
-			case ch <- struct{}{}:
+			case ch <- evt:
 				b.delivered.Add(1)
 			default:
 			}
@@ -139,7 +147,7 @@ func (b *KafkaBus) dispatch(sub *kafkaSubscription, key string) {
 }
 
 // Unsubscribe implements Bus.Unsubscribe.
-func (b *KafkaBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error {
+func (b *KafkaBus) Unsubscribe(ctx context.Context, key string, ch <-chan Event) error {
 	b.mu.Lock()
 	sub := b.subs[key]
 	if sub == nil {
@@ -169,12 +177,12 @@ func (b *KafkaBus) RevokeLease(ctx context.Context, id string) error {
 }
 
 // SubscribeLease subscribes to lease revocation events.
-func (b *KafkaBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+func (b *KafkaBus) SubscribeLease(ctx context.Context, id string) (<-chan Event, error) {
 	return b.Subscribe(ctx, "lease:"+id)
 }
 
 // UnsubscribeLease cancels a lease revocation subscription.
-func (b *KafkaBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+func (b *KafkaBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan Event) error {
 	return b.Unsubscribe(ctx, "lease:"+id, ch)
 }
 

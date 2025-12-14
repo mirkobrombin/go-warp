@@ -1,22 +1,30 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	stdErrors "errors"
+	"sync"
 	"time"
 
-	redis "github.com/redis/go-redis/v9"
-
+	"github.com/mirkobrombin/go-warp/v1/cache"
 	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
+	redis "github.com/redis/go-redis/v9"
 )
 
 const defaultRedisOpTimeout = 5 * time.Second
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
 // RedisStore implements Store using a Redis backend.
 type RedisStore[T any] struct {
 	client  *redis.Client
 	timeout time.Duration
+	codec   cache.Codec
 }
 
 // RedisOption configures a RedisStore.
@@ -24,6 +32,7 @@ type RedisOption func(*redisStoreOptions)
 
 type redisStoreOptions struct {
 	timeout time.Duration
+	codec   cache.Codec
 }
 
 // WithTimeout sets the operation timeout for Redis calls.
@@ -33,13 +42,23 @@ func WithTimeout(d time.Duration) RedisOption {
 	}
 }
 
+// WithCodec sets the codec for serialization.
+func WithCodec(c cache.Codec) RedisOption {
+	return func(o *redisStoreOptions) {
+		o.codec = c
+	}
+}
+
 // NewRedisStore returns a new RedisStore using the provided Redis client.
 func NewRedisStore[T any](client *redis.Client, opts ...RedisOption) *RedisStore[T] {
-	o := redisStoreOptions{timeout: defaultRedisOpTimeout}
+	o := redisStoreOptions{
+		timeout: defaultRedisOpTimeout,
+		codec:   cache.GobCodec{},
+	}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &RedisStore[T]{client: client, timeout: o.timeout}
+	return &RedisStore[T]{client: client, timeout: o.timeout, codec: o.codec}
 }
 
 // Get implements Store.Get.
@@ -73,7 +92,7 @@ func (s *RedisStore[T]) Get(ctx context.Context, key string) (T, bool, error) {
 		return zero, false, err
 	}
 	var v T
-	if err := json.Unmarshal(data, &v); err != nil {
+	if err := s.codec.Unmarshal(data, &v); err != nil {
 		return zero, false, err
 	}
 	return v, true, nil
@@ -87,7 +106,7 @@ func (s *RedisStore[T]) Set(ctx context.Context, key string, value T) error {
 		}
 		return err
 	}
-	data, err := json.Marshal(value)
+	data, err := s.codec.Marshal(value)
 	if err != nil {
 		return err
 	}
@@ -175,7 +194,7 @@ func (b *redisBatch[T]) Commit(ctx context.Context) error {
 	defer cancel()
 	pipe := b.s.client.TxPipeline()
 	for k, v := range b.sets {
-		data, err := json.Marshal(v)
+		data, err := b.s.codec.Marshal(v)
 		if err != nil {
 			return err
 		}

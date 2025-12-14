@@ -20,7 +20,7 @@ func main() {
 	defer client.Close()
 
 	store := adapter.NewInMemoryStore[int]()
-	bus := syncbus.NewRedisBus(client)
+	bus := syncbus.NewRedisBus(syncbus.RedisBusOptions{Client: client, Region: "us-east-1"})
 	engine := merge.NewEngine[int]()
 	engine.Register("counter", func(old, new int) (int, error) {
 		return old + new, nil

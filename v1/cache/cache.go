@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var tracer = otel.Tracer("github.com/mirkobrombin/go-warp/v1/cache")
@@ -45,6 +46,7 @@ type InMemoryCache[T any] struct {
 	missCounter     prometheus.Counter
 	evictionCounter prometheus.Counter
 	latencyHist     prometheus.Histogram
+	traceEnabled    bool
 }
 
 type item[T any] struct {
@@ -126,15 +128,27 @@ func NewInMemory[T any](opts ...InMemoryOption[T]) *InMemoryCache[T] {
 
 // Get implements Cache.Get.
 func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error) {
-	ctx, span := tracer.Start(ctx, "Cache.Get")
-	start := time.Now()
-	defer func() {
-		span.SetAttributes(attribute.Int64("warp.cache.latency_ms", time.Since(start).Milliseconds()))
-		span.End()
-		if c.latencyHist != nil {
-			c.latencyHist.Observe(time.Since(start).Seconds())
-		}
-	}()
+	var span trace.Span
+	var start time.Time
+	if c.traceEnabled {
+		ctx, span = tracer.Start(ctx, "Cache.Get")
+		defer span.End()
+		start = time.Now()
+	} else if c.latencyHist != nil {
+		start = time.Now()
+	}
+
+	if c.traceEnabled || c.latencyHist != nil {
+		defer func() {
+			latency := time.Since(start)
+			if c.traceEnabled {
+				span.SetAttributes(attribute.Int64("warp.cache.latency_ms", latency.Milliseconds()))
+			}
+			if c.latencyHist != nil {
+				c.latencyHist.Observe(latency.Seconds())
+			}
+		}()
+	}
 	select {
 	case <-ctx.Done():
 		var zero T
@@ -149,7 +163,9 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		if c.missCounter != nil {
 			c.missCounter.Inc()
 		}
-		span.SetAttributes(attribute.String("warp.cache.result", "miss"))
+		if c.traceEnabled {
+			span.SetAttributes(attribute.String("warp.cache.result", "miss"))
+		}
 		var zero T
 		return zero, false, nil
 	}
@@ -165,7 +181,9 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		if c.evictionCounter != nil {
 			c.evictionCounter.Inc()
 		}
-		span.SetAttributes(attribute.String("warp.cache.result", "miss"))
+		if c.traceEnabled {
+			span.SetAttributes(attribute.String("warp.cache.result", "miss"))
+		}
 		var zero T
 		return zero, false, nil
 	}
@@ -182,21 +200,35 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 	if c.hitCounter != nil {
 		c.hitCounter.Inc()
 	}
-	span.SetAttributes(attribute.String("warp.cache.result", "hit"))
+	if c.traceEnabled {
+		span.SetAttributes(attribute.String("warp.cache.result", "hit"))
+	}
 	return it.value, true, nil
 }
 
 // Set implements Cache.Set.
 func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
-	ctx, span := tracer.Start(ctx, "Cache.Set")
-	start := time.Now()
-	defer func() {
-		span.SetAttributes(attribute.Int64("warp.cache.latency_ms", time.Since(start).Milliseconds()))
-		span.End()
-		if c.latencyHist != nil {
-			c.latencyHist.Observe(time.Since(start).Seconds())
-		}
-	}()
+	var span trace.Span
+	var start time.Time
+	if c.traceEnabled {
+		ctx, span = tracer.Start(ctx, "Cache.Set")
+		defer span.End()
+		start = time.Now()
+	} else if c.latencyHist != nil {
+		start = time.Now()
+	}
+
+	if c.traceEnabled || c.latencyHist != nil {
+		defer func() {
+			latency := time.Since(start)
+			if c.traceEnabled {
+				span.SetAttributes(attribute.Int64("warp.cache.latency_ms", latency.Milliseconds()))
+			}
+			if c.latencyHist != nil {
+				c.latencyHist.Observe(latency.Seconds())
+			}
+		}()
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -238,15 +270,27 @@ func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl tim
 
 // Invalidate implements Cache.Invalidate.
 func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
-	ctx, span := tracer.Start(ctx, "Cache.Invalidate")
-	start := time.Now()
-	defer func() {
-		span.SetAttributes(attribute.Int64("warp.cache.latency_ms", time.Since(start).Milliseconds()))
-		span.End()
-		if c.latencyHist != nil {
-			c.latencyHist.Observe(time.Since(start).Seconds())
-		}
-	}()
+	var span trace.Span
+	var start time.Time
+	if c.traceEnabled {
+		ctx, span = tracer.Start(ctx, "Cache.Invalidate")
+		defer span.End()
+		start = time.Now()
+	} else if c.latencyHist != nil {
+		start = time.Now()
+	}
+
+	if c.traceEnabled || c.latencyHist != nil {
+		defer func() {
+			latency := time.Since(start)
+			if c.traceEnabled {
+				span.SetAttributes(attribute.Int64("warp.cache.latency_ms", latency.Milliseconds()))
+			}
+			if c.latencyHist != nil {
+				c.latencyHist.Observe(latency.Seconds())
+			}
+		}()
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -353,5 +397,12 @@ func (c *InMemoryCache[T]) Metrics() Stats {
 		Hits:   c.hits.Load(),
 		Misses: c.misses.Load(),
 		Size:   size,
+	}
+}
+
+// WithTracing enables OpenTelemetry tracing for cache operations.
+func WithTracing[T any]() InMemoryOption[T] {
+	return func(c *InMemoryCache[T]) {
+		c.traceEnabled = true
 	}
 }

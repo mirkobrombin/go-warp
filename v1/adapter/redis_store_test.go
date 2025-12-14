@@ -3,6 +3,7 @@ package adapter_test
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -21,17 +22,35 @@ import (
 // underlying miniredis server.
 func newRedisStore[T any](t *testing.T) (*adapter.RedisStore[T], context.Context) {
 	t.Helper()
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis run: %v", err)
-	}
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	addr := os.Getenv("WARP_TEST_REDIS_ADDR")
+	forceReal := os.Getenv("WARP_TEST_FORCE_REAL") == "true"
+	var client *redis.Client
 	ctx := context.Background()
-	t.Cleanup(func() {
-		_ = client.FlushDB(ctx).Err()
-		_ = client.Close()
-		mr.Close()
-	})
+
+	if forceReal && addr == "" {
+		t.Fatal("WARP_TEST_FORCE_REAL is true but WARP_TEST_REDIS_ADDR is empty")
+	}
+
+	if addr != "" {
+		t.Logf("TestRedisStore: using real Redis at %s", addr)
+		client = redis.NewClient(&redis.Options{Addr: addr})
+		t.Cleanup(func() {
+			_ = client.FlushDB(ctx).Err()
+			_ = client.Close()
+		})
+	} else {
+		t.Log("TestRedisStore: using miniredis")
+		mr, err := miniredis.Run()
+		if err != nil {
+			t.Fatalf("miniredis run: %v", err)
+		}
+		client = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() {
+			_ = client.FlushDB(ctx).Err()
+			_ = client.Close()
+			mr.Close()
+		})
+	}
 	return adapter.NewRedisStore[T](client), ctx
 }
 
@@ -79,19 +98,39 @@ func TestRedisStorePersistenceAndWarmup(t *testing.T) {
 // the server state.
 func newRedisStoreWithServer[T any](t *testing.T) (*adapter.RedisStore[T], context.Context, *miniredis.Miniredis, *redis.Client) {
 	t.Helper()
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis run: %v", err)
-	}
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	addr := os.Getenv("WARP_TEST_REDIS_ADDR")
+	forceReal := os.Getenv("WARP_TEST_FORCE_REAL") == "true"
+	var client *redis.Client
+	var mr *miniredis.Miniredis
 	ctx := context.Background()
-	t.Cleanup(func() {
-		_ = client.FlushDB(ctx).Err()
-		_ = client.Close()
-		if mr != nil {
-			mr.Close()
+
+	if forceReal && addr == "" {
+		t.Fatal("WARP_TEST_FORCE_REAL is true but WARP_TEST_REDIS_ADDR is empty")
+	}
+
+	if addr != "" {
+		t.Logf("TestRedisStoreWithServer: using real Redis at %s", addr)
+		client = redis.NewClient(&redis.Options{Addr: addr})
+		t.Cleanup(func() {
+			_ = client.FlushDB(ctx).Err()
+			_ = client.Close()
+		})
+	} else {
+		t.Log("TestRedisStoreWithServer: using miniredis")
+		var err error
+		mr, err = miniredis.Run()
+		if err != nil {
+			t.Fatalf("miniredis run: %v", err)
 		}
-	})
+		client = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		t.Cleanup(func() {
+			_ = client.FlushDB(ctx).Err()
+			_ = client.Close()
+			if mr != nil {
+				mr.Close()
+			}
+		})
+	}
 	return adapter.NewRedisStore[T](client), ctx, mr, client
 }
 
@@ -115,6 +154,9 @@ func TestRedisStoreGetUnmarshalError(t *testing.T) {
 
 func TestRedisStoreKeysScanError(t *testing.T) {
 	s, ctx, mr, _ := newRedisStoreWithServer[string](t)
+	if mr == nil {
+		t.Skip("skipping test requiring miniredis control")
+	}
 	mr.Close()
 	mr = nil
 	if _, err := s.Keys(ctx); err == nil {
@@ -130,6 +172,9 @@ func TestRedisStoreBatchCommitError(t *testing.T) {
 	}
 	if err := b.Set(ctx, "foo", "bar"); err != nil {
 		t.Fatalf("Batch Set: %v", err)
+	}
+	if mr == nil {
+		t.Skip("skipping test requiring miniredis control")
 	}
 	mr.Close()
 	mr = nil
@@ -157,4 +202,49 @@ func TestRedisStoreSentinelErrors(t *testing.T) {
 			t.Fatalf("expected timeout, got %v", err)
 		}
 	})
+}
+
+func TestRedisStoreWithByteCodec(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis run: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	// Use ByteCodec
+	store := adapter.NewRedisStore[[]byte](client, adapter.WithCodec(cache.ByteCodec{}))
+	ctx := context.Background()
+	key := "raw_bytes"
+	val := []byte("binary_data")
+
+	// Set via Store
+	if err := store.Set(ctx, key, val); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	// Verify in Redis directly (should be raw string, not Gob encoded)
+	// Gob encoded usually starts with some header bytes.
+	// Raw string "binary_data" is just "binary_data".
+	got, err := client.Get(ctx, key).Result()
+	if err != nil {
+		t.Fatalf("client.Get failed: %v", err)
+	}
+	if got != string(val) {
+		t.Fatalf("expected raw value %q, got %q", string(val), got)
+	}
+
+	// Get via Store
+	res, ok, err := store.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("store.Get failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("store.Get returned not found")
+	}
+	if string(res) != string(val) {
+		t.Fatalf("store.Get returned mismatch: got %q, want %q", res, val)
+	}
 }

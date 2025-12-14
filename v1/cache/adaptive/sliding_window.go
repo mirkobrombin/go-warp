@@ -1,7 +1,7 @@
 package adaptive
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -95,7 +95,7 @@ func (s *SlidingWindow) TTL(key string) time.Duration {
 	}
 
 	if last, ok := s.lastTTL[key]; !ok || last != ttl {
-		log.Printf("adaptive ttl for key %s adjusted to %v", key, ttl)
+		slog.Info("adaptive ttl adjusted", "key", key, "ttl", ttl)
 		if s.adjustCounter != nil {
 			s.adjustCounter.Inc()
 		}

@@ -31,9 +31,11 @@ func newFakeQuorumBus() *fakeQuorumBus {
 	return &fakeQuorumBus{ackCh: make(chan struct{})}
 }
 
-func (b *fakeQuorumBus) Publish(ctx context.Context, key string) error { return nil }
+func (b *fakeQuorumBus) Publish(ctx context.Context, key string, opts ...syncbus.PublishOption) error {
+	return nil
+}
 
-func (b *fakeQuorumBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+func (b *fakeQuorumBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...syncbus.PublishOption) error {
 	if replicas <= 0 {
 		replicas = 1
 	}
@@ -59,21 +61,49 @@ func (b *fakeQuorumBus) PublishAndAwait(ctx context.Context, key string, replica
 	return nil
 }
 
-func (b *fakeQuorumBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
+func (b *fakeQuorumBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...syncbus.PublishOption) error {
+	if minZones <= 0 {
+		minZones = 1
+	}
+	b.mu.Lock()
+	var nextErr error
+	if len(b.errSeq) > 0 {
+		nextErr = b.errSeq[0]
+		b.errSeq = b.errSeq[1:]
+	} else {
+		nextErr = b.err
+	}
+	b.mu.Unlock()
+	if nextErr != nil {
+		return nextErr
+	}
+	// fakeQuorumBus uses ackCh to simulate acks, we can reuse it for topology acks
+	// assuming 1 ack per zone for simplicity in this fake
+	for i := 0; i < minZones; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-b.ackCh:
+		}
+	}
+	return nil
+}
+
+func (b *fakeQuorumBus) Subscribe(ctx context.Context, key string) (<-chan syncbus.Event, error) {
 	return nil, nil
 }
 
-func (b *fakeQuorumBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error {
+func (b *fakeQuorumBus) Unsubscribe(ctx context.Context, key string, ch <-chan syncbus.Event) error {
 	return nil
 }
 
 func (b *fakeQuorumBus) RevokeLease(ctx context.Context, id string) error { return nil }
 
-func (b *fakeQuorumBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+func (b *fakeQuorumBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus.Event, error) {
 	return nil, nil
 }
 
-func (b *fakeQuorumBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+func (b *fakeQuorumBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan syncbus.Event) error {
 	return nil
 }
 
@@ -84,7 +114,7 @@ func TestWarpDistributedRedis(t *testing.T) {
 		t.Fatalf("miniredis run: %v", err)
 	}
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	bus := syncbus.NewRedisBus(client)
+	bus := syncbus.NewRedisBus(syncbus.RedisBusOptions{Client: client})
 	store := adapter.NewInMemoryStore[int]()
 
 	reg1 := prometheus.NewRegistry()

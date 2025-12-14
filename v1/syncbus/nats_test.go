@@ -2,26 +2,51 @@ package syncbus
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats-server/v2/server"
 	natsserver "github.com/nats-io/nats-server/v2/test"
 	nats "github.com/nats-io/nats.go"
 )
 
 func newNATSBus(t *testing.T) (*NATSBus, context.Context) {
 	t.Helper()
-	s := natsserver.RunRandClientPortServer()
-	conn, err := nats.Connect(s.ClientURL())
-	if err != nil {
-		t.Fatalf("connect: %v", err)
+	addr := os.Getenv("WARP_TEST_NATS_ADDR")
+	forceReal := os.Getenv("WARP_TEST_FORCE_REAL") == "true"
+
+	if forceReal && addr == "" {
+		t.Fatal("WARP_TEST_FORCE_REAL is true but WARP_TEST_NATS_ADDR is empty")
 	}
+
+	var conn *nats.Conn
+	var s *server.Server
+	var err error
+
+	if addr != "" {
+		t.Logf("TestNATSBus: using real NATS at %s", addr)
+		conn, err = nats.Connect(addr)
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+	} else {
+		t.Log("TestNATSBus: using embedded NATS server")
+		s = natsserver.RunRandClientPortServer()
+		conn, err = nats.Connect(s.ClientURL())
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+	}
+
 	bus := NewNATSBus(conn)
 	ctx := context.Background()
 	t.Cleanup(func() {
 		conn.Close()
-		s.Shutdown()
+		if s != nil {
+			s.Shutdown()
+		}
 	})
 	return bus, ctx
 }

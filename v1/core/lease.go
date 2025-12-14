@@ -18,7 +18,7 @@ type lease struct {
 	timer  *time.Timer
 	ticker *time.Ticker
 	stop   chan struct{}
-	sub    chan struct{}
+	sub    <-chan syncbus.Event
 }
 
 // LeaseManager manages active leases and their renewal.

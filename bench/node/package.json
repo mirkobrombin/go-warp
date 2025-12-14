@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "ioredis": "^5.8.2",
+    "redis": "^5.10.0"
+  }
+}

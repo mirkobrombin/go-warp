@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"encoding/json"
 	stdErrors "errors"
 	"time"
 
@@ -12,18 +11,6 @@ import (
 )
 
 const redisCacheTimeout = 5 * time.Second
-
-// Codec defines methods for encoding and decoding values stored in Redis.
-type Codec interface {
-	Marshal(v any) ([]byte, error)
-	Unmarshal(data []byte, v any) error
-}
-
-// JSONCodec implements Codec using encoding/json.
-type JSONCodec struct{}
-
-func (JSONCodec) Marshal(v any) ([]byte, error)      { return json.Marshal(v) }
-func (JSONCodec) Unmarshal(data []byte, v any) error { return json.Unmarshal(data, v) }
 
 // RedisCache implements Cache using a Redis backend.
 type RedisCache[T any] struct {

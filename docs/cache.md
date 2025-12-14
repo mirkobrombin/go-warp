@@ -83,3 +83,11 @@ Resets the TTL to its original value on every access.
 ```go
 w.Register("session:*", core.ModeStrongLocal, 10*time.Minute, cache.WithSlidingTTL(true))
 ```
+
+### Serialization (Codecs)
+
+The cache module supports pluggable serialization for optimized performance.
+
+- **`JSONCodec`** (Default): Uses standard `encoding/json`. Good compatibility, higher CPU/Memory usage.
+- **`GobCodec`**: Uses Go's native `encoding/gob`. Faster than JSON for Go-to-Go systems.
+- **`ByteCodec`**: **Zero-Allocation / Zero-Copy**. Fails if values are not `[]byte`. Use this for raw byte payloads or pre-serialized data for maximum throughput (benchmarks show ~37 allocs -> 0 allocs).

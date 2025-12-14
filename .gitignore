@@ -1,0 +1,17 @@
+# Binaries
+*.pdf
+*.txt
+/warp-bench
+/warp-proxy
+/warp-cli
+/bench-tool
+
+# Standard Go
+vendor/
+bin/
+*.exe
+*.test
+*.prof
+
+# MacOS
+.DS_Store

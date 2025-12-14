@@ -1,7 +1,10 @@
 package syncbus
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	stdErrors "errors"
 	"math/rand"
 	"sync"
@@ -10,46 +13,272 @@ import (
 
 	"github.com/google/uuid"
 	redis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
 )
 
-const redisBusTimeout = 5 * time.Second
+const (
+	redisBusTimeout     = 5 * time.Second
+	globalUpdateChannel = "warp:updates"
+	federationChannel   = "warp:federation"
+	batchThreshold      = 10
+)
+
+var tracer = otel.Tracer("github.com/mirkobrombin/go-warp/v1/syncbus")
+
+type BatchPayload struct {
+	Keys      []string            `json:"k"`
+	IDs       []string            `json:"i"`
+	Timestamp int64               `json:"t"` // UnixMilli
+	Regions   []string            `json:"r,omitempty"`
+	Vectors   []map[string]uint64 `json:"v,omitempty"`
+	Scopes    []Scope             `json:"s,omitempty"`
+}
 
 type redisSubscription struct {
 	pubsub *redis.PubSub
-	chans  []chan struct{}
+	chans  []chan Event
 }
 
 // RedisBus implements Bus using a Redis backend.
 type RedisBus struct {
-	client    *redis.Client
+	client     *redis.Client
+	fedClient  *redis.Client // Dedicated client for federation (Relay)
+	isGateway  bool
+	currentReg string
+
 	mu        sync.Mutex
 	subs      map[string]*redisSubscription
 	pending   map[string]struct{}
 	processed map[string]struct{}
 	published atomic.Uint64
 	delivered atomic.Uint64
+	publishCh chan publishReq
+	batchSub  *redis.PubSub
+	fedSub    *redis.PubSub
+	closeCh   chan struct{}
+}
+
+type publishReq struct {
+	ctx  context.Context
+	key  string
+	opts PublishOptions
+	resp chan error
+}
+
+type RedisBusOptions struct {
+	Client           *redis.Client
+	FederationClient *redis.Client
+	IsGateway        bool
+	Region           string
 }
 
 // NewRedisBus returns a new RedisBus using the provided Redis client.
-func NewRedisBus(client *redis.Client) *RedisBus {
-	return &RedisBus{
-		client:    client,
+func NewRedisBus(opts RedisBusOptions) *RedisBus {
+	b := &RedisBus{
+		client:     opts.Client,
+		fedClient:  opts.FederationClient,
+		isGateway:  opts.IsGateway,
+		currentReg: opts.Region,
+
 		subs:      make(map[string]*redisSubscription),
 		pending:   make(map[string]struct{}),
 		processed: make(map[string]struct{}),
+		publishCh: make(chan publishReq, 1000), // Buffer for high throughput
+		closeCh:   make(chan struct{}),
+	}
+
+	// Subscribe to global updates channel for adaptive batching (local bus)
+	b.batchSub = opts.Client.Subscribe(context.Background(), globalUpdateChannel)
+	go b.dispatchGlobal()
+
+	if b.isGateway && b.fedClient != nil {
+		b.fedSub = b.fedClient.Subscribe(context.Background(), federationChannel)
+		go b.runGatewayRelay()
+	}
+
+	go b.runBatcher()
+	return b
+}
+
+// Close gracefully stops the bus and closes subscriptions.
+func (b *RedisBus) Close() error {
+	close(b.closeCh)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.batchSub != nil {
+		_ = b.batchSub.Close()
+	}
+	if b.fedSub != nil {
+		_ = b.fedSub.Close()
+	}
+
+	for _, sub := range b.subs {
+		_ = sub.pubsub.Close()
+		for _, ch := range sub.chans {
+			close(ch)
+		}
+	}
+	b.subs = make(map[string]*redisSubscription)
+	return nil
+}
+
+func (b *RedisBus) runBatcher() {
+	const maxBatchSize = 100
+	const flushInterval = 10 * time.Millisecond
+
+	var batch []publishReq
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+
+		ctx := context.Background()
+		useGlobalBatch := len(batch) >= batchThreshold
+
+		var lastErr error
+
+		// Adaptive Batching: Compress and send to global channel
+		// Even if not using batching for EVERYTHING, we use it for structured events
+		if useGlobalBatch {
+			payload := BatchPayload{
+				Timestamp: time.Now().UnixMilli(),
+			}
+			for _, req := range batch {
+				payload.Keys = append(payload.Keys, req.key)
+				payload.IDs = append(payload.IDs, uuid.NewString())
+				payload.Regions = append(payload.Regions, req.opts.Region)
+				payload.Vectors = append(payload.Vectors, req.opts.VectorClock)
+				payload.Scopes = append(payload.Scopes, req.opts.Scope)
+			}
+
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			if err := json.NewEncoder(gz).Encode(payload); err == nil {
+				gz.Close()
+				data := buf.Bytes()
+
+				for attempt := 0; attempt < 3; attempt++ {
+					cctx, cancel := context.WithTimeout(ctx, redisBusTimeout)
+					err := b.client.Publish(cctx, globalUpdateChannel, data).Err()
+					cancel()
+
+					if err == nil {
+						for _, req := range batch {
+							req.resp <- nil
+						}
+						batch = nil
+						return
+					}
+					lastErr = err
+					time.Sleep(10 * time.Millisecond)
+				}
+			} else {
+				lastErr = err
+			}
+		} else {
+			// Standard Pipeline (Low Latency)
+			for attempt := 0; attempt < 3; attempt++ {
+				pipe := b.client.Pipeline()
+				id := uuid.NewString()
+
+				for _, req := range batch {
+					// We must still respect the Global Scope logic.
+					// However, standard pipeline only publishes ID to key.
+					// For rich metadata/federation, we force usage of globalUpdateChannel
+					// OR we need to accept that single-key Publish via simple Redis PubSub
+					// loses metadata unless we change the protocol.
+					// To fix this: For ScopeGlobal, we force batch path or specialized handling.
+					if req.opts.Scope == ScopeGlobal {
+						// Force batch path single item or handle separately?
+						// Create a mini-batch for reuse logic
+						// or publish to globalUpdateChannel directly.
+						payload := BatchPayload{
+							Timestamp: time.Now().UnixMilli(),
+							Keys:      []string{req.key},
+							IDs:       []string{id},
+							Regions:   []string{req.opts.Region},
+							Vectors:   []map[string]uint64{req.opts.VectorClock},
+							Scopes:    []Scope{ScopeGlobal},
+						}
+						var buf bytes.Buffer
+						gz := gzip.NewWriter(&buf)
+						_ = json.NewEncoder(gz).Encode(payload)
+						gz.Close()
+						pipe.Publish(req.ctx, globalUpdateChannel, buf.Bytes())
+					} else {
+						pipe.Publish(req.ctx, req.key, id)
+					}
+				}
+
+				fctx, cancel := context.WithTimeout(ctx, redisBusTimeout)
+				_, err := pipe.Exec(fctx)
+				cancel()
+
+				if err == nil {
+					for _, req := range batch {
+						req.resp <- nil
+					}
+					batch = nil
+					return
+				}
+
+				lastErr = err
+				if recErr := b.reconnect(); recErr != nil {
+					time.Sleep(50 * time.Millisecond)
+				} else {
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+		}
+
+		for _, req := range batch {
+			req.resp <- lastErr
+		}
+		batch = nil
+	}
+
+	for {
+		select {
+		case <-b.closeCh:
+			flush()
+			return
+		case req := <-b.publishCh:
+			batch = append(batch, req)
+			if len(batch) >= maxBatchSize {
+				flush()
+				ticker.Reset(flushInterval)
+			}
+		case <-ticker.C:
+			flush()
+		}
 	}
 }
 
 // Publish implements Bus.Publish.
-func (b *RedisBus) Publish(ctx context.Context, key string) error {
+func (b *RedisBus) Publish(ctx context.Context, key string, opts ...PublishOption) error {
+	ctx, span := tracer.Start(ctx, "RedisBus.Publish", trace.WithAttributes(attribute.String("warp.bus.key", key)))
+	defer span.End()
+
 	if err := ctx.Err(); err != nil {
 		if stdErrors.Is(err, context.DeadlineExceeded) {
 			return warperrors.ErrTimeout
 		}
 		return err
 	}
+
+	options := PublishOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
@@ -58,66 +287,36 @@ func (b *RedisBus) Publish(ctx context.Context, key string) error {
 	b.pending[key] = struct{}{}
 	b.mu.Unlock()
 
-	if j := rand.Int63n(int64(10 * time.Millisecond)); j > 0 {
-		select {
-		case <-ctx.Done():
-			b.mu.Lock()
-			delete(b.pending, key)
-			b.mu.Unlock()
-			if stdErrors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return warperrors.ErrTimeout
-			}
-			return ctx.Err()
-		case <-time.After(time.Duration(j)):
-		}
-	}
-
-	id := uuid.NewString()
-	backoff := 100 * time.Millisecond
-	var err error
-	for {
-		cctx, cancel := context.WithTimeout(ctx, redisBusTimeout)
-		err = b.client.Publish(cctx, key, id).Err()
-		cancel()
-		if err == nil {
-			b.published.Add(1)
-			break
-		}
-		if stdErrors.Is(err, context.DeadlineExceeded) {
-			return warperrors.ErrTimeout
-		}
-		_ = b.reconnect()
-		select {
-		case <-ctx.Done():
-			b.mu.Lock()
-			delete(b.pending, key)
-			b.mu.Unlock()
-			if stdErrors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return warperrors.ErrTimeout
-			}
-			return ctx.Err()
-		default:
-		}
-		jitter := time.Duration(rand.Int63n(int64(backoff)))
-		time.Sleep(backoff + jitter)
-		if backoff < time.Second {
-			backoff *= 2
-			if backoff > time.Second {
-				backoff = time.Second
-			}
-		}
-	}
-
-	time.AfterFunc(time.Millisecond, func() {
+	resp := make(chan error, 1)
+	select {
+	case b.publishCh <- publishReq{ctx: ctx, key: key, opts: options, resp: resp}:
+	case <-ctx.Done():
 		b.mu.Lock()
 		delete(b.pending, key)
 		b.mu.Unlock()
-	})
-	return nil
+		return ctx.Err()
+	}
+
+	select {
+	case err := <-resp:
+		b.mu.Lock()
+		delete(b.pending, key)
+		b.mu.Unlock()
+
+		if err == nil {
+			b.published.Add(1)
+		}
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // PublishAndAwait implements Bus.PublishAndAwait using Redis publish counts.
-func (b *RedisBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+func (b *RedisBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...PublishOption) error {
+	ctx, span := tracer.Start(ctx, "RedisBus.PublishAndAwait", trace.WithAttributes(attribute.String("warp.bus.key", key), attribute.Int("warp.bus.replicas", replicas)))
+	defer span.End()
+
 	if replicas <= 0 {
 		replicas = 1
 	}
@@ -202,15 +401,24 @@ func (b *RedisBus) PublishAndAwait(ctx context.Context, key string, replicas int
 	return nil
 }
 
+// PublishAndAwaitTopology implements Bus.PublishAndAwaitTopology.
+func (b *RedisBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...PublishOption) error {
+	// Standard Redis Pub/Sub cannot verify zone topology implicitly.
+	// In a real usage, this would require a custom status channel or an overlay.
+	// For now, we fall back to replica count if we assume 1 replica per zone.
+	// This is a "Best Effort" implementation for v1.
+	return b.PublishAndAwait(ctx, key, minZones, opts...)
+}
+
 // Subscribe implements Bus.Subscribe.
-func (b *RedisBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
+func (b *RedisBus) Subscribe(ctx context.Context, key string) (<-chan Event, error) {
 	if err := ctx.Err(); err != nil {
 		if stdErrors.Is(err, context.DeadlineExceeded) {
 			return nil, warperrors.ErrTimeout
 		}
 		return nil, err
 	}
-	ch := make(chan struct{}, 1)
+	ch := make(chan Event, 1)
 	backoff := 100 * time.Millisecond
 	for {
 		b.mu.Lock()
@@ -227,7 +435,7 @@ func (b *RedisBus) Subscribe(ctx context.Context, key string) (chan struct{}, er
 		cancel()
 		if err == nil {
 			b.mu.Lock()
-			sub = &redisSubscription{pubsub: ps, chans: []chan struct{}{ch}}
+			sub = &redisSubscription{pubsub: ps, chans: []chan Event{ch}}
 			b.subs[key] = sub
 			b.mu.Unlock()
 			go b.dispatch(key, sub)
@@ -264,6 +472,9 @@ func (b *RedisBus) Subscribe(ctx context.Context, key string) (chan struct{}, er
 }
 
 func (b *RedisBus) dispatch(key string, sub *redisSubscription) {
+	_, span := tracer.Start(context.Background(), "RedisBus.Dispatch", trace.WithAttributes(attribute.String("warp.bus.key", key)))
+	defer span.End()
+
 	for msg := range sub.pubsub.Channel() {
 		id := msg.Payload
 		b.mu.Lock()
@@ -272,11 +483,13 @@ func (b *RedisBus) dispatch(key string, sub *redisSubscription) {
 			continue
 		}
 		b.processed[id] = struct{}{}
-		chans := append([]chan struct{}(nil), sub.chans...)
+		chans := append([]chan Event(nil), sub.chans...)
 		b.mu.Unlock()
+
+		evt := Event{Key: key} // Legacy event, empty metadata
 		for _, ch := range chans {
 			select {
-			case ch <- struct{}{}:
+			case ch <- evt:
 				b.delivered.Add(1)
 			default:
 			}
@@ -284,8 +497,149 @@ func (b *RedisBus) dispatch(key string, sub *redisSubscription) {
 	}
 }
 
+func (b *RedisBus) dispatchGlobal() {
+	for msg := range b.batchSub.Channel() {
+		// Attempt decompression
+		gz, err := gzip.NewReader(bytes.NewReader([]byte(msg.Payload)))
+		if err != nil {
+			continue
+		}
+		var payload BatchPayload
+		if err := json.NewDecoder(gz).Decode(&payload); err != nil {
+			gz.Close()
+			continue
+		}
+		gz.Close()
+
+		ctx := context.Background()
+		_, span := tracer.Start(ctx, "RedisBus.DispatchBatch",
+			trace.WithAttributes(
+				attribute.Int("warp.bus.batch_size", len(payload.Keys)),
+				attribute.Int64("warp.bus.propagation_latency_ms", time.Now().UnixMilli()-payload.Timestamp),
+			))
+
+		for i, key := range payload.Keys {
+			if i >= len(payload.IDs) {
+				break
+			}
+			id := payload.IDs[i]
+			b.mu.Lock()
+			if _, ok := b.processed[id]; ok {
+				b.mu.Unlock()
+				continue
+			}
+			b.processed[id] = struct{}{}
+
+			var region string
+			var vector map[string]uint64
+			var scope Scope
+
+			if i < len(payload.Regions) {
+				region = payload.Regions[i]
+			}
+			if i < len(payload.Vectors) {
+				vector = payload.Vectors[i]
+			}
+			if i < len(payload.Scopes) {
+				scope = payload.Scopes[i]
+			}
+
+			// RELAY LOGIC (Outbound):
+			// If we are a Gateway, and the event is Global, and assuming it originated here (or we are just relaying it),
+			// we must forward it to the Federation Bus.
+			// Ideally, we only relay if Origin Region == My Region (to avoid loops).
+			// But currentReg might stick.
+			if b.isGateway && b.fedClient != nil && scope == ScopeGlobal {
+				if region == "" || region == b.currentReg {
+					// Message from this instance, broadcast to global channel
+					// We create a mini batch payload for federation to preserve metadata
+					fedPayload := BatchPayload{
+						Timestamp: time.Now().UnixMilli(),
+						Keys:      []string{key},
+						IDs:       []string{id},
+						Regions:   []string{region}, // Keep origin
+						Vectors:   []map[string]uint64{vector},
+						Scopes:    []Scope{ScopeGlobal},
+					}
+					var buf bytes.Buffer
+					gz := gzip.NewWriter(&buf)
+					if err := json.NewEncoder(gz).Encode(fedPayload); err == nil {
+						gz.Close()
+						// Fire and forget to federation channel
+						b.fedClient.Publish(ctx, federationChannel, buf.Bytes())
+					}
+				}
+			}
+
+			if sub, ok := b.subs[key]; ok {
+				chans := append([]chan Event(nil), sub.chans...)
+				b.mu.Unlock()
+
+				evt := Event{
+					Key:         key,
+					Region:      region,
+					VectorClock: vector,
+					Scope:       scope,
+				}
+
+				for _, ch := range chans {
+					select {
+					case ch <- evt:
+						b.delivered.Add(1)
+					default:
+					}
+				}
+			} else {
+				b.mu.Unlock()
+			}
+		}
+		span.End()
+	}
+}
+
+// runGatewayRelay listens to the Federation Bus and relays valid events to the Local Bus.
+func (b *RedisBus) runGatewayRelay() {
+	for msg := range b.fedSub.Channel() {
+		gz, err := gzip.NewReader(bytes.NewReader([]byte(msg.Payload)))
+		if err != nil {
+			continue
+		}
+		var payload BatchPayload
+		if err := json.NewDecoder(gz).Decode(&payload); err != nil {
+			gz.Close()
+			continue
+		}
+		gz.Close()
+
+		// INBOUND RELAY: Federation -> Local
+		for _, id := range payload.IDs {
+			// Check if we already processed this ID (loop prevention)
+			b.mu.Lock()
+			if _, ok := b.processed[id]; ok {
+				b.mu.Unlock()
+				continue
+			}
+			// We DO NOT mark it processed here yet, because we want dispatchGlobal to handle it
+			// when it comes back from the Local Bus publish?
+			// PRO: If we publish to Local Bus, we will receive it in dispatchGlobal.
+			// CON: dispatchGlobal will try to Relay it back to Federation if we don't be careful!
+			// FIX: In dispatchGlobal, we check "region == b.currentReg". If the inbound event
+			// preserves the original region (e.g. "us-east"), and we are "eu-west",
+			// dispatchGlobal will see region != currentReg and WON'T relay it back.
+			b.mu.Unlock()
+
+			// Republish to Local Bus (globalUpdateChannel) so all local nodes get it.
+			// We must preserve metadata.
+			// We can reuse the payload bytes since we just want to bridge it.
+			// BUT: We need to make sure we don't lose the ID or change it.
+			// Redis Publish is just raw bytes.
+			b.client.Publish(context.Background(), globalUpdateChannel, []byte(msg.Payload))
+		}
+	}
+}
+
 // Unsubscribe implements Bus.Unsubscribe.
-func (b *RedisBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error {
+func (b *RedisBus) Unsubscribe(ctx context.Context, key string, ch <-chan Event) error {
 	if err := ctx.Err(); err != nil {
 		if stdErrors.Is(err, context.DeadlineExceeded) {
 			return warperrors.ErrTimeout
@@ -330,12 +684,12 @@ func (b *RedisBus) RevokeLease(ctx context.Context, id string) error {
 }
 
 // SubscribeLease subscribes to lease revocation events.
-func (b *RedisBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+func (b *RedisBus) SubscribeLease(ctx context.Context, id string) (<-chan Event, error) {
 	return b.Subscribe(ctx, "lease:"+id)
 }
 
 // UnsubscribeLease cancels a lease revocation subscription.
-func (b *RedisBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+func (b *RedisBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan Event) error {
 	return b.Unsubscribe(ctx, "lease:"+id, ch)
 }
 

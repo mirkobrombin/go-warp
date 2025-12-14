@@ -9,6 +9,7 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/cache"
 	"github.com/mirkobrombin/go-warp/v1/core"
 	"github.com/mirkobrombin/go-warp/v1/merge"
+	"github.com/mirkobrombin/go-warp/v1/syncbus"
 )
 
 type failingBus struct {
@@ -16,19 +17,28 @@ type failingBus struct {
 	subscribeErr error
 }
 
-func (f *failingBus) Publish(ctx context.Context, key string) error { return f.publishErr }
-func (f *failingBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+func (f *failingBus) Publish(ctx context.Context, key string, opts ...syncbus.PublishOption) error {
 	return f.publishErr
 }
-func (f *failingBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
+func (b *failingBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...syncbus.PublishOption) error {
+	return b.publishErr
+}
+
+func (b *failingBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...syncbus.PublishOption) error {
+	return b.publishErr
+}
+
+func (f *failingBus) Subscribe(ctx context.Context, key string) (<-chan syncbus.Event, error) {
 	return nil, f.subscribeErr
 }
-func (f *failingBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error { return nil }
-func (f *failingBus) RevokeLease(ctx context.Context, id string) error                    { return f.publishErr }
-func (f *failingBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+func (f *failingBus) Unsubscribe(ctx context.Context, key string, ch <-chan syncbus.Event) error {
+	return nil
+}
+func (f *failingBus) RevokeLease(ctx context.Context, id string) error { return f.publishErr }
+func (f *failingBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus.Event, error) {
 	return nil, f.subscribeErr
 }
-func (f *failingBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+func (f *failingBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan syncbus.Event) error {
 	return nil
 }
 

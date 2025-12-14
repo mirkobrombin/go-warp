@@ -2,6 +2,7 @@ package syncbus_test
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -18,16 +19,39 @@ import (
 
 func newRedisBus(t *testing.T) (*syncbus.RedisBus, context.Context) {
 	t.Helper()
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis run: %v", err)
+	addr := os.Getenv("WARP_TEST_REDIS_ADDR")
+	forceReal := os.Getenv("WARP_TEST_FORCE_REAL") == "true"
+	var client *redis.Client
+	var mr *miniredis.Miniredis
+
+	if forceReal && addr == "" {
+		t.Fatal("WARP_TEST_FORCE_REAL is true but WARP_TEST_REDIS_ADDR is empty")
 	}
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	bus := syncbus.NewRedisBus(client)
+
+	if addr != "" {
+		t.Logf("TestRedisBus: using real Redis at %s", addr)
+		client = redis.NewClient(&redis.Options{Addr: addr})
+	} else {
+		t.Log("TestRedisBus: using miniredis")
+		var err error
+		mr, err = miniredis.Run()
+		if err != nil {
+			t.Fatalf("miniredis run: %v", err)
+		}
+		client = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	}
+
+	bus := syncbus.NewRedisBus(syncbus.RedisBusOptions{Client: client})
 	ctx := context.Background()
 	t.Cleanup(func() {
-		_ = client.Close()
-		mr.Close()
+		_ = bus.Close()
+		if addr != "" {
+			_ = client.FlushAll(context.Background()).Err()
+			_ = client.Close()
+		} else {
+			_ = client.Close()
+			mr.Close()
+		}
 	})
 	return bus, ctx
 }

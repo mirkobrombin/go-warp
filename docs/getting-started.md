@@ -146,5 +146,7 @@ go http.ListenAndServe(":2112", nil)
 ## Next Steps
 
 - **[Core Concepts](core.md)**: Deep dive into Consistency Modes and Architecture.
+- **[Presets](presets.md)**: Production-ready configurations (NewRedisEventual, etc.).
+- **[Sidecar Mode](sidecar.md)**: Using Warp with Python, Node.js, etc.
 - **[Best Practices](best-practices.md)**: Recommended patterns for different use cases.
 - **[Sync Bus](syncbus.md)**: How to configure NATS/Kafka/Redis adapters.

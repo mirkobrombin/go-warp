@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"hash/fnv"
+	"log/slog"
 	"reflect"
 	"runtime"
 	"sync"
@@ -18,7 +19,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
 var tracer = otel.Tracer("github.com/mirkobrombin/go-warp/v1/core")
@@ -62,10 +65,13 @@ type Warp[T any] struct {
 
 	shards [regShardCount]regShard
 
+	group singleflight.Group
+
 	hitCounter      prometheus.Counter
 	missCounter     prometheus.Counter
 	evictionCounter prometheus.Counter
 	latencyHist     prometheus.Histogram
+	traceEnabled    bool
 }
 
 // Txn represents a batch of operations to be applied atomically.
@@ -219,6 +225,29 @@ func (w *Warp[T]) SetQuorum(key string, replicas int) bool {
 	return true
 }
 
+// SetQuorumAware configures the quorum requirements for strong distributed operations,
+// specifying a minimum number of distinct Availability Zones (AZs) that must acknowledge the update.
+// If minZones > 1, the bus must support topology-aware publishing.
+func (w *Warp[T]) SetQuorumAware(key string, replicas int, minZones int) bool {
+	shard := w.shard(key)
+	shard.RLock()
+	reg, ok := shard.regs[key]
+	shard.RUnlock()
+	if !ok {
+		return false
+	}
+	if replicas < 1 {
+		replicas = 1
+	}
+	if minZones < 1 {
+		minZones = 1
+	}
+	reg.mu.Lock()
+	reg.quorum = replicas
+	reg.mu.Unlock()
+	return true
+}
+
 func (r *registration) quorumSize() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -242,16 +271,31 @@ var ErrBusRequired = errors.New("warp: sync bus required for distributed mode")
 
 // Get retrieves a value from the cache.
 func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
-	metrics.GetCounter.Inc()
-	ctx, span := tracer.Start(ctx, "Warp.Get")
-	start := time.Now()
-	defer func() {
-		span.SetAttributes(attribute.Int64("warp.core.latency_ms", time.Since(start).Milliseconds()))
-		span.End()
-		if w.latencyHist != nil {
-			w.latencyHist.Observe(time.Since(start).Seconds())
-		}
-	}()
+	if w.hitCounter != nil {
+		metrics.GetCounter.Inc()
+	}
+
+	var span trace.Span
+	var start time.Time
+	if w.traceEnabled {
+		ctx, span = tracer.Start(ctx, "Warp.Get")
+		defer span.End()
+		start = time.Now()
+	} else if w.latencyHist != nil {
+		start = time.Now()
+	}
+
+	if w.traceEnabled || w.latencyHist != nil {
+		defer func() {
+			latency := time.Since(start)
+			if w.traceEnabled {
+				span.SetAttributes(attribute.Int64("warp.core.latency_ms", latency.Milliseconds()))
+			}
+			if w.latencyHist != nil {
+				w.latencyHist.Observe(latency.Seconds())
+			}
+		}()
+	}
 	shard := w.shard(key)
 	shard.RLock()
 	reg, ok := shard.regs[key]
@@ -264,6 +308,7 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		reg.ttlStrategy.Record(key)
 	}
 	if v, ok, err := w.cache.Get(ctx, key); err != nil {
+		slog.Error("cache get failed", "key", key, "error", err)
 		var zero T
 		return zero, err
 	} else if ok {
@@ -296,34 +341,49 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		if w.hitCounter != nil {
 			w.hitCounter.Inc()
 		}
-		span.SetAttributes(attribute.String("warp.core.result", "hit"))
+		if w.traceEnabled {
+			span.SetAttributes(attribute.String("warp.core.result", "hit"))
+		}
 		return v.Data, nil
 	} else {
 		if w.missCounter != nil {
 			w.missCounter.Inc()
 		}
-		span.SetAttributes(attribute.String("warp.core.result", "miss"))
+		if w.traceEnabled {
+			span.SetAttributes(attribute.String("warp.core.result", "miss"))
+		}
 	}
 	if w.store != nil {
-		v, ok, err := w.store.Get(ctx, key)
-		if err != nil {
-			var zero T
-			return zero, err
-		}
-		if ok {
-			now := time.Now()
-			mv := merge.Value[T]{Data: v, Timestamp: now}
-			ttl := reg.ttl
-			if reg.ttlStrategy != nil {
-				ttl = reg.ttlStrategy.TTL(key)
+		vInterface, errS, _ := w.group.Do(key, func() (interface{}, error) {
+			val, ok, err := w.store.Get(ctx, key)
+			if err != nil {
+				return nil, err
 			}
-			reg.mu.Lock()
-			reg.currentTTL = ttl
-			reg.lastAccess = now
-			reg.mu.Unlock()
-			_ = w.cache.Set(ctx, key, mv, ttl)
-			return mv.Data, nil
+			if !ok {
+				return nil, ErrNotFound // Indicate not found with a specific error
+			}
+			now := time.Now()
+			return merge.Value[T]{Data: val, Timestamp: now}, nil
+		})
+		if errS != nil {
+			var zero T
+			if errors.Is(errS, ErrNotFound) {
+				return zero, ErrNotFound
+			}
+			return zero, errS
 		}
+		mv := vInterface.(merge.Value[T])
+
+		ttl := reg.ttl
+		if reg.ttlStrategy != nil {
+			ttl = reg.ttlStrategy.TTL(key)
+		}
+		reg.mu.Lock()
+		reg.currentTTL = ttl
+		reg.lastAccess = mv.Timestamp
+		reg.mu.Unlock()
+		_ = w.cache.Set(ctx, key, mv, ttl)
+		return mv.Data, nil
 	}
 	var zero T
 	return zero, ErrNotFound
@@ -364,13 +424,17 @@ func (w *Warp[T]) GetAt(ctx context.Context, key string, at time.Time) (T, error
 		if w.hitCounter != nil {
 			w.hitCounter.Inc()
 		}
-		span.SetAttributes(attribute.String("warp.core.result", "hit"))
+		if w.traceEnabled {
+			span.SetAttributes(attribute.String("warp.core.result", "hit"))
+		}
 		return v.Data, nil
 	}
 	if w.missCounter != nil {
 		w.missCounter.Inc()
 	}
-	span.SetAttributes(attribute.String("warp.core.result", "miss"))
+	if w.traceEnabled {
+		span.SetAttributes(attribute.String("warp.core.result", "miss"))
+	}
 	var zero T
 	return zero, ErrNotFound
 }
@@ -378,16 +442,31 @@ func (w *Warp[T]) GetAt(ctx context.Context, key string, at time.Time) (T, error
 // Set stores a value in the cache, applying merge strategies and publishing if needed.
 // It returns an error if persisting the value to the underlying store fails.
 func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
-	metrics.SetCounter.Inc()
-	ctx, span := tracer.Start(ctx, "Warp.Set")
-	start := time.Now()
-	defer func() {
-		span.SetAttributes(attribute.Int64("warp.core.latency_ms", time.Since(start).Milliseconds()))
-		span.End()
-		if w.latencyHist != nil {
-			w.latencyHist.Observe(time.Since(start).Seconds())
-		}
-	}()
+	if w.hitCounter != nil {
+		metrics.SetCounter.Inc()
+	}
+
+	var span trace.Span
+	var start time.Time
+	if w.traceEnabled {
+		ctx, span = tracer.Start(ctx, "Warp.Set")
+		defer span.End()
+		start = time.Now()
+	} else if w.latencyHist != nil {
+		start = time.Now()
+	}
+
+	if w.traceEnabled || w.latencyHist != nil {
+		defer func() {
+			latency := time.Since(start)
+			if w.traceEnabled {
+				span.SetAttributes(attribute.Int64("warp.core.latency_ms", latency.Milliseconds()))
+			}
+			if w.latencyHist != nil {
+				w.latencyHist.Observe(latency.Seconds())
+			}
+		}()
+	}
 	shard := w.shard(key)
 	shard.RLock()
 	reg, ok := shard.regs[key]
@@ -468,16 +547,31 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 // Invalidate removes a key and propagates the invalidation if required.
 // It returns an error if removing the key from the cache fails.
 func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
-	metrics.InvalidateCounter.Inc()
-	ctx, span := tracer.Start(ctx, "Warp.Invalidate")
-	start := time.Now()
-	defer func() {
-		span.SetAttributes(attribute.Int64("warp.core.latency_ms", time.Since(start).Milliseconds()))
-		span.End()
-		if w.latencyHist != nil {
-			w.latencyHist.Observe(time.Since(start).Seconds())
-		}
-	}()
+	if w.hitCounter != nil {
+		metrics.InvalidateCounter.Inc()
+	}
+
+	var span trace.Span
+	var start time.Time
+	if w.traceEnabled {
+		ctx, span = tracer.Start(ctx, "Warp.Invalidate")
+		defer span.End()
+		start = time.Now()
+	} else if w.latencyHist != nil {
+		start = time.Now()
+	}
+
+	if w.traceEnabled || w.latencyHist != nil {
+		defer func() {
+			latency := time.Since(start)
+			if w.traceEnabled {
+				span.SetAttributes(attribute.Int64("warp.core.latency_ms", latency.Milliseconds()))
+			}
+			if w.latencyHist != nil {
+				w.latencyHist.Observe(latency.Seconds())
+			}
+		}()
+	}
 	shard := w.shard(key)
 	shard.RLock()
 	reg, ok := shard.regs[key]
@@ -883,4 +977,11 @@ func (vc validatorCache[T]) Invalidate(ctx context.Context, key string) error {
 // Validator returns a validator instance bound to this warp.
 func (w *Warp[T]) Validator(mode validator.Mode, interval time.Duration) *validator.Validator[T] {
 	return validator.New[T](validatorCache[T]{w: w}, w.store, mode, interval)
+}
+
+// WithTracing enables OpenTelemetry tracing for core operations.
+func WithTracing[T any]() Option[T] {
+	return func(w *Warp[T]) {
+		w.traceEnabled = true
+	}
 }

@@ -81,3 +81,9 @@ When you perform a `Set` or `Invalidate` operation in a distributed mode:
 2. The payload contains the `key` and the operation type.
 3. All other nodes subscribed to the bus receive the event.
 4. They apply the invalidation locally (removing the key from their L1 cache).
+
+## Advanced Features
+
+### Adaptive Batching & Compression
+
+To handle high-throughput scenarios, the `RedisBus` implements **Adaptive Batching**. If the invalidation rate exceeds a threshold, events are automatically buffered (10ms window), compressed using **Gzip**, and sent as a single aggregated payload. This drastically reduces network IO and Redis CPU usage during bursts.

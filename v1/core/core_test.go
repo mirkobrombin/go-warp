@@ -31,42 +31,66 @@ func (s errStore[T]) Keys(ctx context.Context) ([]string, error) { return nil, n
 
 type errBus struct{ err error }
 
-func (b errBus) Publish(ctx context.Context, key string) error                       { return b.err }
-func (b errBus) PublishAndAwait(ctx context.Context, key string, replicas int) error { return b.err }
-func (b errBus) Subscribe(ctx context.Context, key string) (chan struct{}, error)    { return nil, nil }
-func (b errBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error { return nil }
-func (b errBus) RevokeLease(ctx context.Context, id string) error                    { return b.err }
-func (b errBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
-	return nil, nil
+func (b errBus) Publish(ctx context.Context, key string, opts ...syncbus.PublishOption) error {
+	return b.err
 }
-func (b errBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
-	return nil
+func (b errBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...syncbus.PublishOption) error {
+	return b.err
+}
+
+func (b errBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...syncbus.PublishOption) error {
+	return b.err
+}
+
+func (b errBus) Subscribe(ctx context.Context, key string) (<-chan syncbus.Event, error) {
+	return nil, b.err
+}
+func (b errBus) Unsubscribe(ctx context.Context, key string, ch <-chan syncbus.Event) error {
+	return b.err
+}
+func (b errBus) RevokeLease(ctx context.Context, id string) error { return b.err }
+func (b errBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus.Event, error) {
+	return nil, b.err
+}
+func (b errBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan syncbus.Event) error {
+	return b.err
 }
 
 type slowBus struct {
 	delay time.Duration
 	done  chan struct{}
+	*syncbus.InMemoryBus
 }
 
-func (b *slowBus) Publish(ctx context.Context, key string) error {
+func (b *slowBus) Publish(ctx context.Context, key string, opts ...syncbus.PublishOption) error {
 	time.Sleep(b.delay)
 	if b.done != nil {
 		b.done <- struct{}{}
 	}
-	return nil
+	return b.InMemoryBus.Publish(ctx, key, opts...)
 }
 
-func (b *slowBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
-	return b.Publish(ctx, key)
+func (b *slowBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...syncbus.PublishOption) error {
+	time.Sleep(b.delay)
+	return b.InMemoryBus.PublishAndAwait(ctx, key, replicas, opts...)
 }
 
-func (b *slowBus) Subscribe(ctx context.Context, key string) (chan struct{}, error)    { return nil, nil }
-func (b *slowBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error { return nil }
-func (b *slowBus) RevokeLease(ctx context.Context, id string) error                    { return nil }
-func (b *slowBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+func (b *slowBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...syncbus.PublishOption) error {
+	time.Sleep(b.delay)
+	return b.InMemoryBus.PublishAndAwaitTopology(ctx, key, minZones, opts...)
+}
+
+func (b *slowBus) Subscribe(ctx context.Context, key string) (<-chan syncbus.Event, error) {
 	return nil, nil
 }
-func (b *slowBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+func (b *slowBus) Unsubscribe(ctx context.Context, key string, ch <-chan syncbus.Event) error {
+	return nil
+}
+func (b *slowBus) RevokeLease(ctx context.Context, id string) error { return nil }
+func (b *slowBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus.Event, error) {
+	return nil, nil
+}
+func (b *slowBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan syncbus.Event) error {
 	return nil
 }
 
@@ -557,7 +581,7 @@ func TestConcurrentRegisterGetSet(t *testing.T) {
 }
 
 func TestWarpSetAsyncPublish(t *testing.T) {
-	bus := &slowBus{delay: 100 * time.Millisecond, done: make(chan struct{}, 1)}
+	bus := &slowBus{delay: 100 * time.Millisecond, done: make(chan struct{}, 1), InMemoryBus: syncbus.NewInMemoryBus()}
 	c := cache.NewInMemory[merge.Value[string]]()
 	w := New[string](c, nil, bus, merge.NewEngine[string]())
 	w.Register("foo", ModeEventualDistributed, time.Minute)
@@ -577,7 +601,7 @@ func TestWarpSetAsyncPublish(t *testing.T) {
 }
 
 func TestWarpInvalidateAsyncPublish(t *testing.T) {
-	bus := &slowBus{delay: 100 * time.Millisecond, done: make(chan struct{}, 1)}
+	bus := &slowBus{delay: 100 * time.Millisecond, done: make(chan struct{}, 1), InMemoryBus: syncbus.NewInMemoryBus()}
 	c := cache.NewInMemory[merge.Value[string]]()
 	w := New[string](c, nil, bus, merge.NewEngine[string]())
 	w.Register("foo", ModeEventualDistributed, time.Minute)
@@ -593,5 +617,38 @@ func TestWarpInvalidateAsyncPublish(t *testing.T) {
 	case <-bus.done:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatalf("publish did not complete")
+	}
+}
+
+func TestWarpGetSingleflight(t *testing.T) {
+	ctx := context.Background()
+	store := &slowStore[string]{
+		data:    map[string]string{"foo": "bar"},
+		delay:   50 * time.Millisecond,
+		started: make(chan struct{}),
+	}
+	w := New[string](cache.NewInMemory[merge.Value[string]](), store, nil, merge.NewEngine[string]())
+	w.Register("foo", ModeStrongLocal, time.Minute)
+
+	const numCallers = 10
+	var wg sync.WaitGroup
+	wg.Add(numCallers)
+
+	for i := 0; i < numCallers; i++ {
+		go func() {
+			defer wg.Done()
+			v, err := w.Get(ctx, "foo")
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if v != "bar" {
+				t.Errorf("expected value 'bar', got '%s'", v)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if store.calls != 1 {
+		t.Fatalf("expected store.Get to be called once, got %d", store.calls)
 	}
 }

@@ -14,22 +14,65 @@ var (
 	ErrQuorumNotSatisfied = errors.New("syncbus: quorum not satisfied")
 )
 
+// Scope defines the propagation scope of an event.
+type Scope uint8
+
+const (
+	ScopeLocal Scope = iota
+	ScopeGlobal
+)
+
+type PublishOptions struct {
+	Region      string
+	VectorClock map[string]uint64
+	Scope       Scope
+}
+
+type PublishOption func(*PublishOptions)
+
+func WithRegion(region string) PublishOption {
+	return func(o *PublishOptions) {
+		o.Region = region
+	}
+}
+
+func WithVectorClock(vc map[string]uint64) PublishOption {
+	return func(o *PublishOptions) {
+		o.VectorClock = vc
+	}
+}
+
+func WithScope(scope Scope) PublishOption {
+	return func(o *PublishOptions) {
+		o.Scope = scope
+	}
+}
+
+// Event represents a bus event carrying metadata.
+type Event struct {
+	Key         string
+	Region      string
+	VectorClock map[string]uint64
+	Scope       Scope
+}
+
 // Bus provides a simple pub/sub mechanism used by warp to propagate
 // invalidation events across nodes.
 type Bus interface {
-	Publish(ctx context.Context, key string) error
-	PublishAndAwait(ctx context.Context, key string, replicas int) error
-	Subscribe(ctx context.Context, key string) (chan struct{}, error)
-	Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
+	Publish(ctx context.Context, key string, opts ...PublishOption) error
+	PublishAndAwait(ctx context.Context, key string, replicas int, opts ...PublishOption) error
+	PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...PublishOption) error
+	Subscribe(ctx context.Context, key string) (<-chan Event, error)
+	Unsubscribe(ctx context.Context, key string, ch <-chan Event) error
 	RevokeLease(ctx context.Context, id string) error
-	SubscribeLease(ctx context.Context, id string) (chan struct{}, error)
-	UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error
+	SubscribeLease(ctx context.Context, id string) (<-chan Event, error)
+	UnsubscribeLease(ctx context.Context, id string, ch <-chan Event) error
 }
 
 // InMemoryBus is a local implementation of Bus mainly for testing.
 type InMemoryBus struct {
 	mu        sync.Mutex
-	subs      map[string][]chan struct{}
+	subs      map[string][]chan Event
 	pending   map[string]struct{}
 	published atomic.Uint64
 	delivered atomic.Uint64
@@ -37,15 +80,20 @@ type InMemoryBus struct {
 
 // NewInMemoryBus returns a new InMemoryBus.
 func NewInMemoryBus() *InMemoryBus {
-	return &InMemoryBus{subs: make(map[string][]chan struct{}), pending: make(map[string]struct{})}
+	return &InMemoryBus{subs: make(map[string][]chan Event), pending: make(map[string]struct{})}
 }
 
 // Publish implements Bus.Publish.
-func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
+func (b *InMemoryBus) Publish(ctx context.Context, key string, opts ...PublishOption) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+
+	options := PublishOptions{}
+	for _, opt := range opts {
+		opt(&options)
 	}
 
 	b.mu.Lock()
@@ -54,7 +102,7 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 		return nil // deduplicate
 	}
 	b.pending[key] = struct{}{}
-	chans := append([]chan struct{}(nil), b.subs[key]...)
+	chans := append([]chan Event(nil), b.subs[key]...)
 	b.mu.Unlock()
 
 	// random small delay to reduce publish bursts
@@ -69,6 +117,12 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 		}
 	}
 
+	evt := Event{
+		Key:         key,
+		Region:      options.Region,
+		VectorClock: options.VectorClock,
+	}
+
 	b.published.Add(1)
 	for _, ch := range chans {
 		select {
@@ -80,7 +134,7 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 		default:
 		}
 		select {
-		case ch <- struct{}{}:
+		case ch <- evt:
 			b.delivered.Add(1)
 		default:
 		}
@@ -92,8 +146,14 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string) error {
 	return nil
 }
 
+// PublishAndAwaitTopology implements Bus.PublishAndAwaitTopology.
+func (b *InMemoryBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...PublishOption) error {
+	// In-memory simulation: treat zones as simple replica count for now
+	return b.PublishAndAwait(ctx, key, minZones, opts...)
+}
+
 // PublishAndAwait implements Bus.PublishAndAwait.
-func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas int) error {
+func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...PublishOption) error {
 	if replicas <= 0 {
 		replicas = 1
 	}
@@ -103,12 +163,17 @@ func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas 
 	default:
 	}
 
+	options := PublishOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
 		return nil
 	}
-	chans := append([]chan struct{}(nil), b.subs[key]...)
+	chans := append([]chan Event(nil), b.subs[key]...)
 	if len(chans) < replicas {
 		b.mu.Unlock()
 		return ErrQuorumNotSatisfied
@@ -127,6 +192,12 @@ func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas 
 		}
 	}
 
+	evt := Event{
+		Key:         key,
+		Region:      options.Region,
+		VectorClock: options.VectorClock,
+	}
+
 	delivered := 0
 	for _, ch := range chans {
 		select {
@@ -138,7 +209,7 @@ func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas 
 		default:
 		}
 		select {
-		case ch <- struct{}{}:
+		case ch <- evt:
 			b.delivered.Add(1)
 			delivered++
 		default:
@@ -157,14 +228,14 @@ func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas 
 }
 
 // Subscribe implements Bus.Subscribe.
-func (b *InMemoryBus) Subscribe(ctx context.Context, key string) (chan struct{}, error) {
+func (b *InMemoryBus) Subscribe(ctx context.Context, key string) (<-chan Event, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
 	}
 
-	ch := make(chan struct{}, 1)
+	ch := make(chan Event, 1)
 	b.mu.Lock()
 	b.subs[key] = append(b.subs[key], ch)
 	b.mu.Unlock()
@@ -176,7 +247,7 @@ func (b *InMemoryBus) Subscribe(ctx context.Context, key string) (chan struct{},
 }
 
 // Unsubscribe implements Bus.Unsubscribe.
-func (b *InMemoryBus) Unsubscribe(ctx context.Context, key string, ch chan struct{}) error {
+func (b *InMemoryBus) Unsubscribe(ctx context.Context, key string, ch <-chan Event) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -207,12 +278,12 @@ func (b *InMemoryBus) RevokeLease(ctx context.Context, id string) error {
 }
 
 // SubscribeLease subscribes to lease revocation events.
-func (b *InMemoryBus) SubscribeLease(ctx context.Context, id string) (chan struct{}, error) {
+func (b *InMemoryBus) SubscribeLease(ctx context.Context, id string) (<-chan Event, error) {
 	return b.Subscribe(ctx, "lease:"+id)
 }
 
 // UnsubscribeLease cancels a lease revocation subscription.
-func (b *InMemoryBus) UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error {
+func (b *InMemoryBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan Event) error {
 	return b.Unsubscribe(ctx, "lease:"+id, ch)
 }
 

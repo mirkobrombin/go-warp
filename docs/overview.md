@@ -14,6 +14,8 @@ Warp is composed of modular packages:
 - [Versioned Cache](versioned-cache.md) – wraps a cache to keep historical values per key.
 - [Merge Engine](merge.md) – conflict resolution strategies including custom merge functions.
 - [Validator](validator.md) – optional background consistency checks between cache and storage.
+- [Presets](presets.md) – ready-to-use factory functions for common configurations.
+- [Sidecar](sidecar.md) – proxy mode for non-Go applications (RESP protocol).
 - [Metrics](metrics.md) – Prometheus counters and gauges for Warp components.
 
 ## Deployment

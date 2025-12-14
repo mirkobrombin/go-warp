@@ -157,6 +157,14 @@ See [Leases](leases.md).
 | **`ModeEventualDistributed`** | Writes are local, but invalidations are sent to other nodes asynchronously. | **Default**. User profiles, sessions. |
 | **`ModeStrongDistributed`** | Writes wait for a quorum of nodes to acknowledge. | Critical configuration, distributed locks. |
 
+## Request Coalescing (Singleflight)
+
+To prevent cache stampedes (Thundering Herd), `Core` automatically implements request coalescing using `singleflight`. If multiple concurrent requests arrive for the same missing key, Warp will perform the fetch (from L2 or Source) only once and share the result with all callers.
+
+## Structured Logging
+
+Warp uses `log/slog` for structured logging. By default, it logs at `Info` level. You can configure the logger or integrate it with your application's handler (e.g., JSON handler for production).
+
 ## Metrics
 
 Warp exposes Prometheus metrics. See [Metrics](metrics.md).
