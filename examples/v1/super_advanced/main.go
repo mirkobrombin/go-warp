@@ -173,9 +173,9 @@ func runWithWarp(ctx context.Context) runStats {
 	bus := syncbus.NewInMemoryBus()
 
 	baseCache := cache.NewInMemory[merge.VersionedValue[int]]()
-	vCache := versioned.New[int](baseCache, workerCount*opsPerWorker, versioned.WithMetrics[int](reg))
+	vCache := versioned.New(baseCache, workerCount*opsPerWorker, versioned.WithMetrics[int](reg))
 	engine := merge.NewEngine[int]()
-	w := core.New[int](vCache, store, bus, engine, core.WithMetrics[int](reg))
+	w := core.New(vCache, store, bus, engine, core.WithMetrics[int](reg))
 
 	w.Merge("counter", func(old, new int) (int, error) { return old + new, nil })
 
@@ -279,9 +279,9 @@ func runWithWarpFull(ctx context.Context) runStats {
 	wb := watchbus.NewInMemory()
 
 	baseCache := cache.NewInMemory[merge.VersionedValue[int]]()
-	vCache := versioned.New[int](baseCache, workerCount*opsPerWorker, versioned.WithMetrics[int](reg))
+	vCache := versioned.New(baseCache, workerCount*opsPerWorker, versioned.WithMetrics[int](reg))
 	engine := merge.NewEngine[int]()
-	w := core.New[int](vCache, store, bus, engine, core.WithMetrics[int](reg))
+	w := core.New(vCache, store, bus, engine, core.WithMetrics[int](reg))
 
 	w.Merge("counter", func(old, new int) (int, error) { return old + new, nil })
 

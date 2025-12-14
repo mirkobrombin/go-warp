@@ -218,7 +218,7 @@ func TestWarpConcurrentAccess(t *testing.T) {
 	ctx := context.Background()
 	c := cache.NewInMemory[merge.Value[int]]()
 	s := adapter.NewInMemoryStore[int]()
-	w := New[int](c, s, syncbus.NewInMemoryBus(), merge.NewEngine[int]())
+	w := New(c, s, syncbus.NewInMemoryBus(), merge.NewEngine[int]())
 	if !w.Register(
 		"counter",
 		ModeStrongLocal,
@@ -322,7 +322,7 @@ func TestWarpGetAtExpire(t *testing.T) {
 
 func TestWarpMerge(t *testing.T) {
 	ctx := context.Background()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), adapter.NewInMemoryStore[int](), nil, merge.NewEngine[int]())
+	w := New(cache.NewInMemory[merge.Value[int]](), adapter.NewInMemoryStore[int](), nil, merge.NewEngine[int]())
 	w.Register("cnt", ModeStrongLocal, time.Minute)
 	w.Merge("cnt", func(old, new int) (int, error) {
 		return old + new, nil

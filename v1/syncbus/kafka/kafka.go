@@ -1,4 +1,4 @@
-package syncbus
+package kafka
 
 import (
 	"context"
@@ -7,12 +7,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	sarama "github.com/IBM/sarama"
+	"github.com/IBM/sarama"
+	"github.com/mirkobrombin/go-warp/v1/syncbus"
 )
 
 type kafkaSubscription struct {
 	pc    sarama.PartitionConsumer
-	chans []chan Event
+	chans []chan syncbus.Event
 }
 
 // KafkaBus implements Bus using a Kafka backend.
@@ -55,7 +56,7 @@ func NewKafkaBus(brokers []string, cfg *sarama.Config) (*KafkaBus, error) {
 }
 
 // Publish implements Bus.Publish.
-func (b *KafkaBus) Publish(ctx context.Context, key string, opts ...PublishOption) error {
+func (b *KafkaBus) Publish(ctx context.Context, key string, opts ...syncbus.PublishOption) error {
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
@@ -91,22 +92,22 @@ func (b *KafkaBus) Publish(ctx context.Context, key string, opts ...PublishOptio
 
 // PublishAndAwait implements Bus.PublishAndAwait. Kafka sync producer does not expose
 // subscriber replication acknowledgements at this level, so quorum is unsupported.
-func (b *KafkaBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...PublishOption) error {
+func (b *KafkaBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...syncbus.PublishOption) error {
 	if replicas <= 1 {
 		return b.Publish(ctx, key, opts...)
 	}
-	return ErrQuorumUnsupported
+	return syncbus.ErrQuorumUnsupported
 }
 
 // PublishAndAwaitTopology implements Bus.PublishAndAwaitTopology.
-func (b *KafkaBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...PublishOption) error {
+func (b *KafkaBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...syncbus.PublishOption) error {
 	// Kafka does not easily support this synchronous topology check.
-	return ErrQuorumUnsupported
+	return syncbus.ErrQuorumUnsupported
 }
 
 // Subscribe implements Bus.Subscribe.
-func (b *KafkaBus) Subscribe(ctx context.Context, key string) (<-chan Event, error) {
-	ch := make(chan Event, 1)
+func (b *KafkaBus) Subscribe(ctx context.Context, key string) (<-chan syncbus.Event, error) {
+	ch := make(chan syncbus.Event, 1)
 	b.mu.Lock()
 	sub := b.subs[key]
 	if sub == nil {
@@ -132,10 +133,10 @@ func (b *KafkaBus) Subscribe(ctx context.Context, key string) (<-chan Event, err
 func (b *KafkaBus) dispatch(sub *kafkaSubscription, key string) {
 	for range sub.pc.Messages() {
 		b.mu.Lock()
-		chans := append([]chan Event(nil), b.subs[key].chans...)
+		chans := append([]chan syncbus.Event(nil), b.subs[key].chans...)
 		b.mu.Unlock()
 
-		evt := Event{Key: key}
+		evt := syncbus.Event{Key: key}
 		for _, ch := range chans {
 			select {
 			case ch <- evt:
@@ -147,7 +148,7 @@ func (b *KafkaBus) dispatch(sub *kafkaSubscription, key string) {
 }
 
 // Unsubscribe implements Bus.Unsubscribe.
-func (b *KafkaBus) Unsubscribe(ctx context.Context, key string, ch <-chan Event) error {
+func (b *KafkaBus) Unsubscribe(ctx context.Context, key string, ch <-chan syncbus.Event) error {
 	b.mu.Lock()
 	sub := b.subs[key]
 	if sub == nil {
@@ -177,25 +178,26 @@ func (b *KafkaBus) RevokeLease(ctx context.Context, id string) error {
 }
 
 // SubscribeLease subscribes to lease revocation events.
-func (b *KafkaBus) SubscribeLease(ctx context.Context, id string) (<-chan Event, error) {
+func (b *KafkaBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus.Event, error) {
 	return b.Subscribe(ctx, "lease:"+id)
 }
 
 // UnsubscribeLease cancels a lease revocation subscription.
-func (b *KafkaBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan Event) error {
+func (b *KafkaBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan syncbus.Event) error {
 	return b.Unsubscribe(ctx, "lease:"+id, ch)
 }
 
 // Metrics returns the published and delivered counts.
-func (b *KafkaBus) Metrics() Metrics {
-	return Metrics{
+func (b *KafkaBus) Metrics() syncbus.Metrics {
+	return syncbus.Metrics{
 		Published: b.published.Load(),
 		Delivered: b.delivered.Load(),
 	}
 }
 
 // Close releases resources used by the KafkaBus.
-func (b *KafkaBus) Close() {
+func (b *KafkaBus) Close() error {
 	_ = b.producer.Close()
 	_ = b.consumer.Close()
+	return nil
 }

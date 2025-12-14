@@ -6,7 +6,7 @@ points in time.
 
 ```go
 base := cache.NewInMemory[merge.VersionedValue[int]]()
-vc := versioned.New[int](base, 5, versioned.WithMaxEntries[int](1000))
+vc := versioned.New(base, 5, versioned.WithMaxEntries[int](1000))
 ```
 
 The history length is limited by the configured `limit` parameter. A global LRU

@@ -22,8 +22,8 @@ func main() {
 		return old + new, nil
 	})
 
-	w1 := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, engine)
-	w2 := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, engine)
+	w1 := core.New(cache.NewInMemory[merge.Value[int]](), store, bus, engine)
+	w2 := core.New(cache.NewInMemory[merge.Value[int]](), store, bus, engine)
 
 	w1.Register("counter", core.ModeEventualDistributed, time.Minute)
 	w2.Register("counter", core.ModeEventualDistributed, time.Minute)

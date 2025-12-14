@@ -1,60 +1,58 @@
-package syncbus
+package nats
 
 import (
 	"context"
-	"errors"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
-	redis "github.com/redis/go-redis/v9"
-
-	warperrors "github.com/mirkobrombin/go-warp/v1/errors"
+	"github.com/nats-io/nats-server/v2/server"
+	natsserver "github.com/nats-io/nats-server/v2/test"
+	nats "github.com/nats-io/nats.go"
 )
 
-func newRedisBus(t *testing.T) (*RedisBus, context.Context) {
+func newNATSBus(t *testing.T) (*NATSBus, context.Context) {
 	t.Helper()
-	addr := os.Getenv("WARP_TEST_REDIS_ADDR")
+	addr := os.Getenv("WARP_TEST_NATS_ADDR")
 	forceReal := os.Getenv("WARP_TEST_FORCE_REAL") == "true"
-	var client *redis.Client
-	var mr *miniredis.Miniredis
 
 	if forceReal && addr == "" {
-		t.Fatal("WARP_TEST_FORCE_REAL is true but WARP_TEST_REDIS_ADDR is empty")
+		t.Fatal("WARP_TEST_FORCE_REAL is true but WARP_TEST_NATS_ADDR is empty")
 	}
+
+	var conn *nats.Conn
+	var s *server.Server
+	var err error
 
 	if addr != "" {
-		t.Logf("TestRedisBus: using real Redis at %s", addr)
-		client = redis.NewClient(&redis.Options{Addr: addr})
-	} else {
-		t.Log("TestRedisBus: using miniredis")
-		var err error
-		mr, err = miniredis.Run()
+		t.Logf("TestNATSBus: using real NATS at %s", addr)
+		conn, err = nats.Connect(addr)
 		if err != nil {
-			t.Fatalf("miniredis run: %v", err)
+			t.Fatalf("connect: %v", err)
 		}
-		client = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	} else {
+		t.Log("TestNATSBus: using embedded NATS server")
+		s = natsserver.RunRandClientPortServer()
+		conn, err = nats.Connect(s.ClientURL())
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
 	}
 
-	bus := NewRedisBus(RedisBusOptions{Client: client})
+	bus := NewNATSBus(conn)
 	ctx := context.Background()
 	t.Cleanup(func() {
-		_ = bus.Close()
-		if addr != "" {
-			_ = client.FlushAll(context.Background()).Err()
-			_ = client.Close()
-		} else {
-			_ = client.Close()
-			mr.Close()
+		conn.Close()
+		if s != nil {
+			s.Shutdown()
 		}
 	})
 	return bus, ctx
 }
 
-func TestRedisBusPublishSubscribeFlowAndMetrics(t *testing.T) {
-	bus, ctx := newRedisBus(t)
+func TestNATSBusPublishSubscribeFlowAndMetrics(t *testing.T) {
+	bus, ctx := newNATSBus(t)
 	ch, err := bus.Subscribe(ctx, "key")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -76,8 +74,8 @@ func TestRedisBusPublishSubscribeFlowAndMetrics(t *testing.T) {
 	}
 }
 
-func TestRedisBusContextBasedUnsubscribe(t *testing.T) {
-	bus, _ := newRedisBus(t)
+func TestNATSBusContextBasedUnsubscribe(t *testing.T) {
+	bus, _ := newNATSBus(t)
 	subCtx, cancel := context.WithCancel(context.Background())
 	ch, err := bus.Subscribe(subCtx, "key")
 	if err != nil {
@@ -99,8 +97,8 @@ func TestRedisBusContextBasedUnsubscribe(t *testing.T) {
 	}
 }
 
-func TestRedisBusDeduplicatePendingKeys(t *testing.T) {
-	bus, ctx := newRedisBus(t)
+func TestNATSBusDeduplicatePendingKeys(t *testing.T) {
+	bus, ctx := newNATSBus(t)
 	ch, err := bus.Subscribe(ctx, "key")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -125,13 +123,13 @@ func TestRedisBusDeduplicatePendingKeys(t *testing.T) {
 	}
 }
 
-func TestRedisBusReconnectAfterClose(t *testing.T) {
-	bus, ctx := newRedisBus(t)
+func TestNATSBusReconnectAfterClose(t *testing.T) {
+	bus, ctx := newNATSBus(t)
 	ch, err := bus.Subscribe(ctx, "key")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	_ = bus.client.Close()
+	bus.conn.Close()
 	if err := bus.Publish(ctx, "key"); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -149,13 +147,13 @@ func TestRedisBusReconnectAfterClose(t *testing.T) {
 	}
 }
 
-func TestRedisBusReconnectLoop(t *testing.T) {
-	bus, ctx := newRedisBus(t)
+func TestNATSBusReconnectLoop(t *testing.T) {
+	bus, ctx := newNATSBus(t)
 	ch, err := bus.Subscribe(ctx, "key")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	_ = bus.client.Close()
+	bus.conn.Close()
 	done := make(chan error, 1)
 	go func() { done <- bus.Publish(ctx, "key") }()
 	select {
@@ -173,14 +171,14 @@ func TestRedisBusReconnectLoop(t *testing.T) {
 	}
 }
 
-func TestRedisBusIdempotentAfterReconnect(t *testing.T) {
-	bus, ctx := newRedisBus(t)
+func TestNATSBusIdempotentAfterReconnect(t *testing.T) {
+	bus, ctx := newNATSBus(t)
 	ch, err := bus.Subscribe(ctx, "key")
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	id := uuid.NewString()
-	if err := bus.client.Publish(ctx, "key", id).Err(); err != nil {
+	if err := bus.conn.Publish("key", []byte(id)); err != nil {
 		t.Fatalf("direct publish: %v", err)
 	}
 	select {
@@ -188,26 +186,16 @@ func TestRedisBusIdempotentAfterReconnect(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for publish")
 	}
-	_ = bus.client.Close()
+	bus.conn.Close()
 	if err := bus.reconnect(); err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}
-	if err := bus.client.Publish(ctx, "key", id).Err(); err != nil {
+	if err := bus.conn.Publish("key", []byte(id)); err != nil {
 		t.Fatalf("dup publish: %v", err)
 	}
 	select {
 	case <-ch:
 		t.Fatal("duplicate delivered")
 	case <-time.After(200 * time.Millisecond):
-	}
-}
-
-func TestRedisBusTimeout(t *testing.T) {
-	bus, ctx := newRedisBus(t)
-	tCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
-	defer cancel()
-	time.Sleep(time.Millisecond)
-	if err := bus.Publish(tCtx, "key"); !errors.Is(err, warperrors.ErrTimeout) {
-		t.Fatalf("expected timeout error, got %v", err)
 	}
 }

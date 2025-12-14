@@ -6,6 +6,7 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/core"
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
+	busredis "github.com/mirkobrombin/go-warp/v1/syncbus/redis"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -33,7 +34,7 @@ func NewRedisEventual[T any](opts RedisOptions) *core.Warp[T] {
 	store := adapter.NewRedisStore[T](client)
 
 	// Bus: Redis Pub/Sub
-	bus := syncbus.NewRedisBus(syncbus.RedisBusOptions{Client: client})
+	bus := busredis.NewRedisBus(busredis.RedisBusOptions{Client: client})
 
 	// Engine: Standard Last-Write-Wins (or Vector Clock if T is Versioned, but default Engine is simpler)
 	engine := merge.NewEngine[T]()

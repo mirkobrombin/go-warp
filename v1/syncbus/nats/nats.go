@@ -1,4 +1,4 @@
-package syncbus
+package nats
 
 import (
 	"context"
@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mirkobrombin/go-warp/v1/syncbus"
 	nats "github.com/nats-io/nats.go"
 )
 
 type natsSubscription struct {
 	sub   *nats.Subscription
-	chans []chan Event
+	chans []chan syncbus.Event
 }
 
 // NATSBus implements Bus using a NATS backend.
@@ -38,7 +39,7 @@ func NewNATSBus(conn *nats.Conn) *NATSBus {
 }
 
 // Publish implements Bus.Publish.
-func (b *NATSBus) Publish(ctx context.Context, key string, opts ...PublishOption) error {
+func (b *NATSBus) Publish(ctx context.Context, key string, opts ...syncbus.PublishOption) error {
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
@@ -96,12 +97,12 @@ func (b *NATSBus) Publish(ctx context.Context, key string, opts ...PublishOption
 
 // PublishAndAwait implements Bus.PublishAndAwait. NATS core subjects do not expose
 // subscriber counts, so only a quorum of 1 is supported.
-func (b *NATSBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...PublishOption) error {
+func (b *NATSBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...syncbus.PublishOption) error {
 	if replicas <= 0 {
 		replicas = 1
 	}
 	if replicas > 1 {
-		return ErrQuorumUnsupported
+		return syncbus.ErrQuorumUnsupported
 	}
 	if err := b.Publish(ctx, key, opts...); err != nil {
 		return err
@@ -117,14 +118,14 @@ func (b *NATSBus) PublishAndAwait(ctx context.Context, key string, replicas int,
 }
 
 // PublishAndAwaitTopology implements Bus.PublishAndAwaitTopology.
-func (b *NATSBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...PublishOption) error {
+func (b *NATSBus) PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...syncbus.PublishOption) error {
 	// NATS does not support topology awareness in Core NATS.
-	return ErrQuorumUnsupported
+	return syncbus.ErrQuorumUnsupported
 }
 
 // Subscribe implements Bus.Subscribe.
-func (b *NATSBus) Subscribe(ctx context.Context, key string) (<-chan Event, error) {
-	ch := make(chan Event, 1)
+func (b *NATSBus) Subscribe(ctx context.Context, key string) (<-chan syncbus.Event, error) {
+	ch := make(chan syncbus.Event, 1)
 	backoff := 100 * time.Millisecond
 
 	for {
@@ -140,7 +141,7 @@ func (b *NATSBus) Subscribe(ctx context.Context, key string) (<-chan Event, erro
 		ns, err := b.conn.Subscribe(key, b.natsHandler(key))
 		if err == nil {
 			b.mu.Lock()
-			b.subs[key] = &natsSubscription{sub: ns, chans: []chan Event{ch}}
+			b.subs[key] = &natsSubscription{sub: ns, chans: []chan syncbus.Event{ch}}
 			b.mu.Unlock()
 			break
 		}
@@ -168,7 +169,7 @@ func (b *NATSBus) Subscribe(ctx context.Context, key string) (<-chan Event, erro
 }
 
 // Unsubscribe implements Bus.Unsubscribe.
-func (b *NATSBus) Unsubscribe(ctx context.Context, key string, ch <-chan Event) error {
+func (b *NATSBus) Unsubscribe(ctx context.Context, key string, ch <-chan syncbus.Event) error {
 	b.mu.Lock()
 	sub := b.subs[key]
 	if sub == nil {
@@ -198,18 +199,18 @@ func (b *NATSBus) RevokeLease(ctx context.Context, id string) error {
 }
 
 // SubscribeLease subscribes to lease revocation events.
-func (b *NATSBus) SubscribeLease(ctx context.Context, id string) (<-chan Event, error) {
+func (b *NATSBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus.Event, error) {
 	return b.Subscribe(ctx, "lease:"+id)
 }
 
 // UnsubscribeLease cancels a lease revocation subscription.
-func (b *NATSBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan Event) error {
+func (b *NATSBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan syncbus.Event) error {
 	return b.Unsubscribe(ctx, "lease:"+id, ch)
 }
 
 // Metrics returns the published and delivered counts.
-func (b *NATSBus) Metrics() Metrics {
-	return Metrics{
+func (b *NATSBus) Metrics() syncbus.Metrics {
+	return syncbus.Metrics{
 		Published: b.published.Load(),
 		Delivered: b.delivered.Load(),
 	}
@@ -224,10 +225,10 @@ func (b *NATSBus) natsHandler(key string) nats.MsgHandler {
 			return
 		}
 		b.processed[id] = struct{}{}
-		chans := append([]chan Event(nil), b.subs[key].chans...)
+		chans := append([]chan syncbus.Event(nil), b.subs[key].chans...)
 		b.mu.Unlock()
 
-		evt := Event{Key: key}
+		evt := syncbus.Event{Key: key}
 		for _, c := range chans {
 			select {
 			case c <- evt:

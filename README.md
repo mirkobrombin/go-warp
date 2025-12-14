@@ -29,12 +29,12 @@ Results from `bench/` suite running on a standard developer machine (Docker/Podm
 
 | System | Mode | Ops/sec | Avg Latency | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **Warp** | **Eventual (L2=Redis)** | **~2,500,000** | **390 ns** | **Hits L1 memory, syncs via Bus.** |
-| **Warp** | StrongLocal | ~2,280,000 | 438 ns | Pure in-memory (No network). |
-| Ristretto | Local Cache | ~11,800,000 | 85 ns | Raw cache speed (no Warp features). |
-| Redis | Remote | ~108,000 | 9.2 µs | Network roundtrip required. |
-| DragonFly | Remote | ~83,000* | 12.0 µs | *Client-side bottleneck.* |
-| DragonFly | Remote | ~83,000* | 12.0 µs | *Client-side bottleneck.* |
+| **Warp** | **Eventual (L2=Redis)** | **~2,650,000** | **378 ns** | **Hits L1 memory, syncs via Bus.** |
+| **Warp** | StrongLocal | ~2,610,000 | 382 ns | Pure in-memory (No network). |
+| Ristretto | Local Cache | ~12,700,000 | 79 ns | Raw cache speed (no Warp features). |
+| Redis | Remote | ~98,000 | 10.2 µs | Network roundtrip required. |
+| DragonFly | Remote | ~42,000* | 23.0 µs | *Client-side bottleneck.* |
+
 | **Warp Proxy** | **Sidecar (Node.js)** | **~250,000** | **-** | **Pipelined (Batch=50).** |
 | **Warp Proxy** | **Sidecar (Python)** | **~95,000** | **-** | **Pipelined (Batch=50).** |
 

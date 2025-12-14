@@ -1,4 +1,4 @@
-package syncbus
+package kafka
 
 import (
 	"context"

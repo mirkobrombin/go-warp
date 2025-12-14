@@ -18,6 +18,8 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/cache"
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
+	busnats "github.com/mirkobrombin/go-warp/v1/syncbus/nats"
+	busredis "github.com/mirkobrombin/go-warp/v1/syncbus/redis"
 )
 
 type fakeQuorumBus struct {
@@ -107,20 +109,21 @@ func (b *fakeQuorumBus) UnsubscribeLease(ctx context.Context, id string, ch <-ch
 	return nil
 }
 
-func TestWarpDistributedRedis(t *testing.T) {
+func TestDistributedInvalidation(t *testing.T) {
 	ctx := context.Background()
 	mr, err := miniredis.Run()
 	if err != nil {
 		t.Fatalf("miniredis run: %v", err)
 	}
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	bus := syncbus.NewRedisBus(syncbus.RedisBusOptions{Client: client})
+
+	bus := busredis.NewRedisBus(busredis.RedisBusOptions{Client: client})
 	store := adapter.NewInMemoryStore[int]()
 
 	reg1 := prometheus.NewRegistry()
 	reg2 := prometheus.NewRegistry()
-	w1 := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int](), WithMetrics[int](reg1))
-	w2 := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int](), WithMetrics[int](reg2))
+	w1 := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int](), WithMetrics[int](reg1))
+	w2 := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int](), WithMetrics[int](reg2))
 
 	w1.Register("counter", ModeStrongDistributed, time.Minute)
 	w2.Register("counter", ModeStrongDistributed, time.Minute)
@@ -193,13 +196,13 @@ func TestWarpDistributedNATS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	bus := syncbus.NewNATSBus(conn)
+	bus := busnats.NewNATSBus(conn)
 	store := adapter.NewInMemoryStore[int]()
 
 	reg1 := prometheus.NewRegistry()
 	reg2 := prometheus.NewRegistry()
-	w1 := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int](), WithMetrics[int](reg1))
-	w2 := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int](), WithMetrics[int](reg2))
+	w1 := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int](), WithMetrics[int](reg1))
+	w2 := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int](), WithMetrics[int](reg2))
 
 	w1.Register("counter", ModeStrongDistributed, time.Minute)
 	w2.Register("counter", ModeStrongDistributed, time.Minute)
@@ -269,7 +272,7 @@ func TestWarpStrongDistributedWaitsForQuorum(t *testing.T) {
 	ctx := context.Background()
 	bus := newFakeQuorumBus()
 	store := adapter.NewInMemoryStore[int]()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
 	w.Register("counter", ModeStrongDistributed, time.Minute)
 	if !w.SetQuorum("counter", 2) {
 		t.Fatalf("expected quorum configuration to succeed")
@@ -309,7 +312,7 @@ func TestWarpStrongDistributedWaitsForQuorum(t *testing.T) {
 func TestWarpStrongDistributedQuorumTimeout(t *testing.T) {
 	bus := newFakeQuorumBus()
 	store := adapter.NewInMemoryStore[int]()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
 	w.Register("counter", ModeStrongDistributed, time.Minute)
 	w.SetQuorum("counter", 2)
 
@@ -324,7 +327,7 @@ func TestWarpStrongDistributedQuorumError(t *testing.T) {
 	bus := newFakeQuorumBus()
 	bus.err = syncbus.ErrQuorumNotSatisfied
 	store := adapter.NewInMemoryStore[int]()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
 	w.Register("counter", ModeStrongDistributed, time.Minute)
 	w.SetQuorum("counter", 3)
 
@@ -337,7 +340,7 @@ func TestWarpSetRollbackOnQuorumFailure(t *testing.T) {
 	ctx := context.Background()
 	bus := newFakeQuorumBus()
 	store := adapter.NewInMemoryStore[int]()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
 	w.Register("counter", ModeStrongDistributed, time.Minute)
 
 	go func() {
@@ -366,7 +369,7 @@ func TestWarpInvalidateRollbackOnQuorumFailure(t *testing.T) {
 	ctx := context.Background()
 	bus := newFakeQuorumBus()
 	store := adapter.NewInMemoryStore[int]()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
 	w.Register("counter", ModeStrongDistributed, time.Minute)
 
 	go func() {
@@ -395,7 +398,7 @@ func TestWarpTxnRollbackOnQuorumFailure(t *testing.T) {
 	ctx := context.Background()
 	bus := newFakeQuorumBus()
 	store := adapter.NewInMemoryStore[int]()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
 	w.Register("counter", ModeStrongDistributed, time.Minute)
 
 	go func() {
@@ -426,7 +429,7 @@ func TestWarpTxnDeleteRollbackOnQuorumFailure(t *testing.T) {
 	ctx := context.Background()
 	bus := newFakeQuorumBus()
 	store := adapter.NewInMemoryStore[int]()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
 	w.Register("counter", ModeStrongDistributed, time.Minute)
 
 	go func() {
@@ -457,7 +460,7 @@ func TestWarpTxnRollbackMultiKeyOnQuorumFailure(t *testing.T) {
 	ctx := context.Background()
 	bus := newFakeQuorumBus()
 	store := adapter.NewInMemoryStore[int]()
-	w := New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w := New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
 	w.Register("counter", ModeStrongDistributed, time.Minute)
 	w.Register("mirror", ModeStrongDistributed, time.Minute)
 

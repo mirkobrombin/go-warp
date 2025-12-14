@@ -14,10 +14,10 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/cache"
 	"github.com/mirkobrombin/go-warp/v1/core"
 	"github.com/mirkobrombin/go-warp/v1/merge"
-	"github.com/mirkobrombin/go-warp/v1/syncbus"
+	busredis "github.com/mirkobrombin/go-warp/v1/syncbus/redis"
 )
 
-func newRedisBus(t *testing.T) (*syncbus.RedisBus, context.Context) {
+func newRedisBus(t *testing.T) (*busredis.RedisBus, context.Context) {
 	t.Helper()
 	addr := os.Getenv("WARP_TEST_REDIS_ADDR")
 	forceReal := os.Getenv("WARP_TEST_FORCE_REAL") == "true"
@@ -41,7 +41,7 @@ func newRedisBus(t *testing.T) (*syncbus.RedisBus, context.Context) {
 		client = redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	}
 
-	bus := syncbus.NewRedisBus(syncbus.RedisBusOptions{Client: client})
+	bus := busredis.NewRedisBus(busredis.RedisBusOptions{Client: client})
 	ctx := context.Background()
 	t.Cleanup(func() {
 		_ = bus.Close()
@@ -59,8 +59,8 @@ func newRedisBus(t *testing.T) (*syncbus.RedisBus, context.Context) {
 func TestRedisBusConcurrentInvalidations(t *testing.T) {
 	bus, ctx := newRedisBus(t)
 	store := adapter.NewInMemoryStore[int]()
-	w1 := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
-	w2 := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w1 := core.New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
+	w2 := core.New(cache.NewInMemory[merge.Value[int]](), store, bus, merge.NewEngine[int]())
 	w1.Register("key", core.ModeStrongDistributed, time.Minute)
 	w2.Register("key", core.ModeStrongDistributed, time.Minute)
 

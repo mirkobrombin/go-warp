@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go"
 
-	"github.com/mirkobrombin/go-warp/v1/lock"
-	"github.com/mirkobrombin/go-warp/v1/syncbus"
+	"github.com/mirkobrombin/go-warp/v1/lock"                 // Interface
+	busnats "github.com/mirkobrombin/go-warp/v1/syncbus/nats" // Implementation
 )
 
 func main() {
@@ -20,7 +20,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	bus := syncbus.NewNATSBus(nc)
+	bus := busnats.NewNATSBus(nc)
 
 	node1 := lock.NewInMemory(bus)
 	node2 := lock.NewInMemory(bus)

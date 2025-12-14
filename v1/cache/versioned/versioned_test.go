@@ -11,7 +11,7 @@ import (
 
 func TestCacheSetGetHistory(t *testing.T) {
 	base := cache.NewInMemory[merge.VersionedValue[int]]()
-	c := New[int](base, 3)
+	c := New(base, 3)
 	ctx := context.Background()
 	v1 := merge.Value[int]{Data: 1, Timestamp: time.Now().Add(-3 * time.Minute)}
 	v2 := merge.Value[int]{Data: 2, Timestamp: time.Now().Add(-2 * time.Minute)}
@@ -40,7 +40,7 @@ func TestCacheSetGetHistory(t *testing.T) {
 
 func TestCacheHistoryLimit(t *testing.T) {
 	base := cache.NewInMemory[merge.VersionedValue[int]]()
-	c := New[int](base, 2)
+	c := New(base, 2)
 	ctx := context.Background()
 	now := time.Now()
 	v1 := merge.Value[int]{Data: 1, Timestamp: now.Add(-3 * time.Minute)}
@@ -59,7 +59,7 @@ func TestCacheHistoryLimit(t *testing.T) {
 
 func TestCacheInvalidate(t *testing.T) {
 	base := cache.NewInMemory[merge.VersionedValue[int]]()
-	c := New[int](base, 1)
+	c := New(base, 1)
 	ctx := context.Background()
 	mv := merge.Value[int]{Data: 1, Timestamp: time.Now()}
 	if err := c.Set(ctx, "k", mv, time.Minute); err != nil {
@@ -75,7 +75,7 @@ func TestCacheInvalidate(t *testing.T) {
 
 func TestCacheGlobalEviction(t *testing.T) {
 	base := cache.NewInMemory[merge.VersionedValue[int]]()
-	c := New[int](base, 1, WithMaxEntries[int](1))
+	c := New(base, 1, WithMaxEntries[int](1))
 	ctx := context.Background()
 	mv := merge.Value[int]{Data: 1, Timestamp: time.Now()}
 	if err := c.Set(ctx, "k1", mv, time.Minute); err != nil {
@@ -95,7 +95,7 @@ func TestCacheGlobalEviction(t *testing.T) {
 
 func TestCacheMetricsCounters(t *testing.T) {
 	base := cache.NewInMemory[merge.VersionedValue[int]]()
-	c := New[int](base, 1)
+	c := New(base, 1)
 	ctx := context.Background()
 	now := time.Now()
 

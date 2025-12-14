@@ -10,8 +10,8 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/adapter"
 	"github.com/mirkobrombin/go-warp/v1/cache"
 	"github.com/mirkobrombin/go-warp/v1/core"
-	"github.com/mirkobrombin/go-warp/v1/merge"
-	"github.com/mirkobrombin/go-warp/v1/syncbus"
+	"github.com/mirkobrombin/go-warp/v1/merge"                  // Interface
+	busredis "github.com/mirkobrombin/go-warp/v1/syncbus/redis" // Implementation
 )
 
 func main() {
@@ -20,14 +20,14 @@ func main() {
 	defer client.Close()
 
 	store := adapter.NewInMemoryStore[int]()
-	bus := syncbus.NewRedisBus(syncbus.RedisBusOptions{Client: client, Region: "us-east-1"})
+	bus := busredis.NewRedisBus(busredis.RedisBusOptions{Client: client, Region: "us-east-1"})
 	engine := merge.NewEngine[int]()
 	engine.Register("counter", func(old, new int) (int, error) {
 		return old + new, nil
 	})
 
-	w1 := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, engine)
-	w2 := core.New[int](cache.NewInMemory[merge.Value[int]](), store, bus, engine)
+	w1 := core.New(cache.NewInMemory[merge.Value[int]](), store, bus, engine)
+	w2 := core.New(cache.NewInMemory[merge.Value[int]](), store, bus, engine)
 
 	w1.Register("counter", core.ModeEventualDistributed, time.Minute)
 	w2.Register("counter", core.ModeEventualDistributed, time.Minute)
