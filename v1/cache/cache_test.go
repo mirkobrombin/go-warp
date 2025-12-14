@@ -117,11 +117,11 @@ func TestInMemoryCacheEviction(t *testing.T) {
 }
 
 func TestNewStrategies(t *testing.T) {
-	c := New()
+	c := New[int]()
 	if _, ok := c.(*InMemoryCache[int]); !ok {
 		t.Fatalf("expected LRU cache by default")
 	}
-	c = New(WithStrategy[int](LFUStrategy))
+	c = New[int](WithStrategy[int](LFUStrategy))
 	if _, ok := c.(*LFUCache[int]); !ok {
 		t.Fatalf("expected LFU cache")
 	}
@@ -129,7 +129,7 @@ func TestNewStrategies(t *testing.T) {
 
 func TestAdaptiveSwitch(t *testing.T) {
 	ctx := context.Background()
-	c := New(WithStrategy[int](AdaptiveStrategy))
+	c := New[int](WithStrategy[int](AdaptiveStrategy))
 	ac, ok := c.(*AdaptiveCache[int])
 	if !ok {
 		t.Fatalf("expected AdaptiveCache")
