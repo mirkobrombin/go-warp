@@ -386,8 +386,6 @@ func (b *RedisBus) runBatcher() {
 			client = b.client
 			b.mu.Unlock()
 
-			// ...
-
 			// Add jitter to increase deduplication window and reduce stampedes
 			if j := rand.Int63n(int64(100 * time.Millisecond)); j > 0 {
 				select {
