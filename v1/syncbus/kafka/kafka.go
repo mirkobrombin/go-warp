@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,8 @@ type KafkaBus struct {
 	pending   map[string]struct{}
 	published atomic.Uint64
 	delivered atomic.Uint64
+	closed    bool
+	wg        sync.WaitGroup
 }
 
 // NewKafkaBus creates a new KafkaBus connecting to the given brokers.
@@ -58,12 +61,18 @@ func NewKafkaBus(brokers []string, cfg *sarama.Config) (*KafkaBus, error) {
 // Publish implements Bus.Publish.
 func (b *KafkaBus) Publish(ctx context.Context, key string, opts ...syncbus.PublishOption) error {
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return errors.New("kafka bus closed")
+	}
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
 		return nil // deduplicate
 	}
 	b.pending[key] = struct{}{}
+	b.wg.Add(1)
 	b.mu.Unlock()
+	defer b.wg.Done()
 
 	if j := rand.Int63n(int64(10 * time.Millisecond)); j > 0 {
 		select {
@@ -197,6 +206,15 @@ func (b *KafkaBus) Metrics() syncbus.Metrics {
 
 // Close releases resources used by the KafkaBus.
 func (b *KafkaBus) Close() error {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	b.closed = true
+	b.mu.Unlock()
+
+	b.wg.Wait()
 	_ = b.producer.Close()
 	_ = b.consumer.Close()
 	return nil
