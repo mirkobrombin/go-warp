@@ -506,6 +506,11 @@ func (b *RedisBus) reconnect() error {
 			_ = sub.pubsub.Close()
 		}
 		ps := b.client.Subscribe(context.Background(), key)
+		// Wait for subscription to be established to avoid race with Publish
+		if _, err := ps.Receive(context.Background()); err != nil {
+			_ = ps.Close()
+			continue
+		}
 		sub.pubsub = ps
 		go b.dispatch(key, sub)
 	}
