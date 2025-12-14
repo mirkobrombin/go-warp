@@ -242,13 +242,14 @@ func (b *RedisBus) dispatchGlobal() {
 
 	// Robust subscription loop
 	for {
+		// Refresh client in case of reconnection
+		b.mu.Lock()
+		client = b.client
+		b.mu.Unlock()
+
 		ps := client.Subscribe(context.Background(), globalUpdateChannel)
-		// No easy way to check if subscribe worked without receiving, but usually it's fine.
-		// If connection fails, Receive fails?
 
 		ch := ps.Channel()
-		// Inner loop for processing messages
-		// If channel closes (connection drop), we break and re-subscribe
 
 	loop:
 		for {
