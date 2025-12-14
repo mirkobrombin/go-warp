@@ -24,7 +24,7 @@ const (
 	redisBusTimeout     = 5 * time.Second
 	globalUpdateChannel = "warp:updates"
 	batchThreshold      = 10
-	batchTicker         = 10 * time.Millisecond
+	batchTicker         = 100 * time.Millisecond
 )
 
 type BatchPayload struct {
@@ -343,14 +343,25 @@ func (b *RedisBus) runBatcher() {
 			return
 		}
 
-		payload := BatchPayload{
-			Keys:    make([]string, len(batch)),
-			Regions: make([]string, len(batch)),
-			Vectors: make([]map[string]uint64, len(batch)),
-			Scopes:  make([]syncbus.Scope, len(batch)),
+		// Deduplicate keys in the batch
+		seen := make(map[string]struct{})
+		uniqueBatch := make([]publishReq, 0, len(batch))
+
+		for _, req := range batch {
+			if _, ok := seen[req.key]; !ok {
+				seen[req.key] = struct{}{}
+				uniqueBatch = append(uniqueBatch, req)
+			}
 		}
 
-		for i, req := range batch {
+		payload := BatchPayload{
+			Keys:    make([]string, len(uniqueBatch)),
+			Regions: make([]string, len(uniqueBatch)),
+			Vectors: make([]map[string]uint64, len(uniqueBatch)),
+			Scopes:  make([]syncbus.Scope, len(uniqueBatch)),
+		}
+
+		for i, req := range uniqueBatch {
 			payload.Keys[i] = req.key
 			payload.Regions[i] = req.opts.Region
 			payload.Vectors[i] = req.opts.VectorClock
@@ -399,19 +410,9 @@ func (b *RedisBus) runBatcher() {
 			err = client.Publish(context.Background(), globalUpdateChannel, buf.String()).Err()
 		}
 
-		// Also publish individually to key channels for compatibility/local listeners not on global?
-		// NOTE: Original logic implied global update channel carries everything.
-		// But Wait, standard subscriptions listen on "key".
-		// We must ALSO publish to "key" for standard redis listeners?
-		// If we only publish to global, standard listeners on "key" won't get it unless dispatchGlobal handles it.
-		// dispatchGlobal DOES handle it for this node. But what about other nodes?
-		// If other nodes run this code, they listen on globalUpdateChannel and dispatch.
-		// So this is sufficient for go-warp mesh.
-		// But if we want simple redis compat, we might need to publish to key too.
-		// For now, assuming Global is primary.
-
-		// However, for pure key-based invalidation without batching overhead for simple keys:
-		// The original code seemingly just used batching.
+		// Note: Metric increment logic was removed from here as we are reverting to Publish-based counting
+		// or if we want to keep improved accuracy, we can keep it here and remove from Publish.
+		// BUT original code had it in Publish. I will stick to original to be safe.
 
 		for _, req := range batch {
 			req.resp <- err
