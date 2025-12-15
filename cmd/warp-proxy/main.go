@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -15,11 +13,27 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/core"
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/tidwall/redcon"
 )
 
 var (
-	port = flag.Int("port", 6380, "Port to listen on")
-	addr = flag.String("addr", "0.0.0.0", "Address to listen on")
+	port        = flag.Int("port", 6380, "Port to listen on")
+	metricsPort = flag.Int("metrics-port", 2112, "Port for Prometheus metrics")
+	addr        = flag.String("addr", "0.0.0.0", "Address to listen on")
+)
+
+var (
+	opsProcessed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "warp_proxy_ops_total",
+		Help: "The total number of processed events",
+	})
+	activeConns = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "warp_proxy_active_connections",
+		Help: "The number of active connections",
+	})
 )
 
 type server struct {
@@ -29,122 +43,89 @@ type server struct {
 func main() {
 	flag.Parse()
 
-	// Initialize Warp
-	// We use InMemory options for the sidecar for simplicity in V1,
-	// assuming it acts as a standalone cache or connected via external bus if configured.
-	// For V2 we would parse config to Connect to Redis/Bus.
 	c := cache.NewInMemory[merge.Value[[]byte]](
 		cache.WithMaxEntries[merge.Value[[]byte]](10000),
 	)
 	bus := syncbus.NewInMemoryBus()
-	// No store for pure caching proxy sidecar by default
 	w := core.New[[]byte](c, nil, bus, nil)
 
 	srv := &server{warp: w}
 
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", *addr, *port))
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		log.Printf("metrics listening on :%d", *metricsPort)
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", *metricsPort), mux); err != nil {
+			log.Printf("metrics server error: %v", err)
+		}
+	}()
+
+	listenAddr := fmt.Sprintf("%s:%d", *addr, *port)
+	log.Printf("warp-proxy listening on %s (redcon)", listenAddr)
+
+	err := redcon.ListenAndServe(listenAddr,
+		srv.handler,
+		func(conn redcon.Conn) bool {
+			// Accept
+			activeConns.Inc()
+			return true
+		},
+		func(conn redcon.Conn, err error) {
+			// Closed
+			activeConns.Dec()
+		},
+	)
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
-	}
-	defer listener.Close()
-
-	log.Printf("warp-proxy listening on %s:%d", *addr, *port)
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("failed to accept: %v", err)
-			continue
-		}
-		go srv.handle(conn)
+		log.Fatal(err)
 	}
 }
 
-func (s *server) handle(conn net.Conn) {
-	defer conn.Close()
-
-	reader := bufio.NewReader(conn)
-	writer := bufio.NewWriter(conn)
-
-	respReader := NewRESPReader(reader)
-	respWriter := NewRESPWriter(writer)
-
-	for {
-		// Read first command
-		args, err := respReader.ReadCommand()
-		if err != nil {
-			if err != io.EOF {
-				log.Printf("read error: %v", err)
-			}
-			return
-		}
-
-		s.execute(respWriter, args)
-
-		// Consume pipelined commands from buffer
-		for reader.Buffered() > 0 {
-			args, err := respReader.ReadCommand()
-			if err != nil {
-				respWriter.Flush()
-				return
-			}
-			s.execute(respWriter, args)
-		}
-
-		if err := respWriter.Flush(); err != nil {
-			return
-		}
-	}
-}
-
-func (s *server) execute(w *RESPWriter, args [][]byte) {
-	if len(args) == 0 {
+func (s *server) handler(conn redcon.Conn, cmd redcon.Command) {
+	if len(cmd.Args) == 0 {
 		return
 	}
+	opsProcessed.Inc()
 
-	cmd := string(args[0])
-	if len(cmd) > 0 {
-		cmd = strings.ToUpper(cmd)
-	}
-
-	switch cmd {
+	switch strings.ToUpper(string(cmd.Args[0])) {
 	case "GET":
-		if len(args) < 2 {
-			w.WriteError("ERR wrong number of arguments for 'get' command")
+		if len(cmd.Args) != 2 {
+			conn.WriteError("ERR wrong number of arguments for 'get' command")
 			return
 		}
-		key := string(args[1])
-
+		key := string(cmd.Args[1])
 		val, err := s.warp.Get(context.Background(), key)
 		if err != nil {
 			if err == core.ErrNotFound {
-				w.WriteNull()
+				conn.WriteNull()
 			} else if err == core.ErrUnregistered {
+				// Auto-register on missed access (Sidecar behavior)
 				if s.warp.Register(key, core.ModeStrongLocal, 5*time.Minute) {
+					// Retry get after registration
 					val, err = s.warp.Get(context.Background(), key)
 					if err == nil {
-						w.WriteBulk(val)
+						conn.WriteBulk(val)
 					} else {
-						w.WriteNull()
+						conn.WriteNull()
 					}
 				} else {
-					w.WriteError(err.Error())
+					conn.WriteError(err.Error())
 				}
 			} else {
-				w.WriteError(err.Error())
+				conn.WriteError(err.Error())
 			}
 		} else {
-			w.WriteBulk(val)
+			conn.WriteBulk(val)
 		}
+
 	case "SET":
-		if len(args) < 3 {
-			w.WriteError("ERR wrong number of arguments for 'set' command")
+		if len(cmd.Args) != 3 {
+			conn.WriteError("ERR wrong number of arguments for 'set' command")
 			return
 		}
-		key := string(args[1])
-		val := args[2] // Value is []byte, good!
+		key := string(cmd.Args[1])
+		val := cmd.Args[2]
 
-		// Check reg logic
+		// Check registration
 		_, err := s.warp.Get(context.Background(), key)
 		if err == core.ErrUnregistered {
 			s.warp.Register(key, core.ModeStrongLocal, 5*time.Minute)
@@ -152,25 +133,30 @@ func (s *server) execute(w *RESPWriter, args [][]byte) {
 
 		err = s.warp.Set(context.Background(), key, val)
 		if err != nil {
-			w.WriteError(err.Error())
+			conn.WriteError(err.Error())
 		} else {
-			w.WriteSimpleString("OK")
+			conn.WriteString("OK")
 		}
+
 	case "PING":
-		if len(args) > 1 {
-			w.WriteBulk(args[1])
+		if len(cmd.Args) > 1 {
+			conn.WriteBulk(cmd.Args[1])
 		} else {
-			w.WriteSimpleString("PONG")
+			conn.WriteString("PONG")
 		}
-	case "COMMAND":
-		w.WriteSimpleString("OK")
+
 	case "INFO":
-		w.WriteBulk([]byte("# Server\r\nredis_version:6.0.0\r\nwarp_version:1.0.0\r\n"))
-	case "CLIENT":
-		w.WriteSimpleString("OK")
+		conn.WriteBulkString("# Server\r\nredis_version:6.0.0\r\nwarp_version:1.0.0\r\n")
+
+	case "COMMAND", "CLIENT", "AUTH", "SELECT":
+		// Admin/Connection commands as No-Op to satisfy client libraries
+		conn.WriteString("OK")
+
+	case "QUIT":
+		conn.WriteString("OK")
+		conn.Close()
+
 	default:
-		w.WriteError(fmt.Sprintf("ERR unknown command '%s'", cmd))
+		conn.WriteError("ERR unknown command '" + string(cmd.Args[0]) + "'")
 	}
 }
-
-// Methods below are replaced by RESPWriter methods
