@@ -109,6 +109,10 @@ func (b *fakeQuorumBus) UnsubscribeLease(ctx context.Context, id string, ch <-ch
 	return nil
 }
 
+func (b *fakeQuorumBus) IsHealthy() bool {
+	return true
+}
+
 func TestDistributedInvalidation(t *testing.T) {
 	ctx := context.Background()
 	mr, err := miniredis.Run()

@@ -411,10 +411,6 @@ func (b *RedisBus) runBatcher() {
 			err = client.Publish(context.Background(), globalUpdateChannel, buf.String()).Err()
 		}
 
-		// Note: Metric increment logic was removed from here as we are reverting to Publish-based counting
-		// or if we want to keep improved accuracy, we can keep it here and remove from Publish.
-		// BUT original code had it in Publish. I will stick to original to be safe.
-
 		for _, req := range batch {
 			req.resp <- err
 		}
@@ -516,6 +512,11 @@ func (b *RedisBus) reconnect() error {
 		go b.dispatch(key, sub)
 	}
 	return nil
+}
+
+// IsHealthy implements Bus.IsHealthy.
+func (b *RedisBus) IsHealthy() bool {
+	return true
 }
 
 // Close releases resources used by the RedisBus.

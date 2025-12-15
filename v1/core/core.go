@@ -515,6 +515,10 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 			return err
 		}
 		if w.bus != nil {
+			if !w.bus.IsHealthy() {
+				slog.Warn("syncbus unhealthy, degrading to local set", "key", key)
+				return nil
+			}
 			go func() {
 				if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
 					select {
@@ -527,6 +531,13 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	case ModeStrongDistributed:
 		if w.bus == nil {
 			return ErrBusRequired
+		}
+		if !w.bus.IsHealthy() {
+			slog.Warn("syncbus unhealthy, degrading to local set", "key", key)
+			if err := applyLocal(); err != nil {
+				return err
+			}
+			return nil
 		}
 		quorum := reg.quorumSize()
 		if err := w.bus.PublishAndAwait(ctx, key, quorum); err != nil {
@@ -595,6 +606,10 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 			return err
 		}
 		if w.bus != nil {
+			if !w.bus.IsHealthy() {
+				slog.Warn("syncbus unhealthy, degrading to local invalidate", "key", key)
+				return nil
+			}
 			go func() {
 				if err := w.bus.Publish(context.WithoutCancel(ctx), key); err != nil {
 					select {
@@ -607,6 +622,13 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 	case ModeStrongDistributed:
 		if w.bus == nil {
 			return ErrBusRequired
+		}
+		if !w.bus.IsHealthy() {
+			slog.Warn("syncbus unhealthy, degrading to local invalidate", "key", key)
+			if err := applyLocal(); err != nil {
+				return err
+			}
+			return nil
 		}
 		quorum := reg.quorumSize()
 		if err := w.bus.PublishAndAwait(ctx, key, quorum); err != nil {

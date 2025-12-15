@@ -204,6 +204,11 @@ func (b *KafkaBus) Metrics() syncbus.Metrics {
 	}
 }
 
+// IsHealthy implements Bus.IsHealthy.
+func (b *KafkaBus) IsHealthy() bool {
+	return true
+}
+
 // Close releases resources used by the KafkaBus.
 func (b *KafkaBus) Close() error {
 	b.mu.Lock()

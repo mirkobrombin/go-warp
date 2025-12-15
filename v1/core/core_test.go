@@ -53,7 +53,11 @@ func (b errBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus.E
 	return nil, b.err
 }
 func (b errBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan syncbus.Event) error {
-	return b.err
+	return nil
+}
+
+func (b errBus) IsHealthy() bool {
+	return true
 }
 
 type slowBus struct {

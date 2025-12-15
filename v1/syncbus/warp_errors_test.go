@@ -42,6 +42,10 @@ func (f *failingBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan 
 	return nil
 }
 
+func (b *failingBus) IsHealthy() bool {
+	return true
+}
+
 func TestWarpPublishError(t *testing.T) {
 	bus := &failingBus{publishErr: errors.New("publish failed")}
 	w := core.New[string](cache.NewInMemory[merge.Value[string]](), nil, bus, merge.NewEngine[string]())

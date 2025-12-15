@@ -22,11 +22,11 @@ echo "Running benchmarks..."
 go build -o bench-tool bench/main.go
 
 # Run Go benchmarks first
-# ./bench-tool -target warp-local
-# ./bench-tool -target ristretto
-# ./bench-tool -target warp-redis
-# ./bench-tool -target redis
-# ./bench-tool -target dragonfly
+./bench-tool -target warp-local
+./bench-tool -target ristretto
+./bench-tool -target warp-redis
+./bench-tool -target redis
+./bench-tool -target dragonfly
 
 # Run Polyglot benchmarks against Warp Proxy (built and running)
 echo "Building and starting Warp Proxy for Polyglot tests..."

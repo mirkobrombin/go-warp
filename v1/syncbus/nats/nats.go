@@ -198,6 +198,11 @@ func (b *NATSBus) RevokeLease(ctx context.Context, id string) error {
 	return b.Publish(ctx, "lease:"+id)
 }
 
+// IsHealthy implements Bus.IsHealthy.
+func (b *NATSBus) IsHealthy() bool {
+	return true
+}
+
 // SubscribeLease subscribes to lease revocation events.
 func (b *NATSBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus.Event, error) {
 	return b.Subscribe(ctx, "lease:"+id)

@@ -67,6 +67,7 @@ type Bus interface {
 	RevokeLease(ctx context.Context, id string) error
 	SubscribeLease(ctx context.Context, id string) (<-chan Event, error)
 	UnsubscribeLease(ctx context.Context, id string, ch <-chan Event) error
+	IsHealthy() bool
 }
 
 // InMemoryBus is a local implementation of Bus mainly for testing.
@@ -81,6 +82,11 @@ type InMemoryBus struct {
 // NewInMemoryBus returns a new InMemoryBus.
 func NewInMemoryBus() *InMemoryBus {
 	return &InMemoryBus{subs: make(map[string][]chan Event), pending: make(map[string]struct{})}
+}
+
+// IsHealthy implements Bus.IsHealthy.
+func (b *InMemoryBus) IsHealthy() bool {
+	return true
 }
 
 // Publish implements Bus.Publish.
