@@ -116,6 +116,34 @@ func TestInMemoryCacheEviction(t *testing.T) {
 	}
 }
 
+func TestInMemoryCache_MaxMemory(t *testing.T) {
+	ctx := context.Background()
+	c := NewInMemory[string](WithMaxMemory[string](20))
+	defer c.Close()
+
+	c.Set(ctx, "k1", "12345", time.Minute)
+	c.Set(ctx, "k2", "12345", time.Minute)
+	c.Set(ctx, "k3", "12345", time.Minute)
+
+	if c.GetCurrentMemory() != 15 {
+		t.Fatalf("expected 15 bytes, got %d", c.GetCurrentMemory())
+	}
+
+	c.Set(ctx, "k4", "1234567890", time.Minute)
+
+	if _, ok, _ := c.Get(ctx, "k1"); ok {
+		t.Fatalf("expected k1 to be evicted due to memory pressure")
+	}
+	if _, ok, _ := c.Get(ctx, "k4"); !ok {
+		t.Fatalf("expected k4 to be present")
+	}
+
+	mem := c.GetCurrentMemory()
+	if mem > 20 {
+		t.Fatalf("memory usage %d exceeds limit 20", mem)
+	}
+}
+
 func TestNewStrategies(t *testing.T) {
 	c := New[int]()
 	if _, ok := c.(*InMemoryCache[int]); !ok {

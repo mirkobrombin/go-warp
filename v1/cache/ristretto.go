@@ -76,7 +76,8 @@ func (r *RistrettoCache[T]) Set(ctx context.Context, key string, value T, ttl ti
 		return ctx.Err()
 	default:
 	}
-	r.c.SetWithTTL(key, value, 1, ttl)
+	cost := EstimateSize(value)
+	r.c.SetWithTTL(key, value, cost, ttl)
 	r.c.Wait()
 	return nil
 }

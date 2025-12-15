@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"unsafe"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -18,6 +20,11 @@ var tracer = otel.Tracer("github.com/mirkobrombin/go-warp/v1/cache")
 // Cache defines the basic operations for a cache layer.
 //
 // T represents the type of values stored in the cache.
+type Sizer interface {
+	Size() int64
+}
+
+// Cache defines the basic operations for a cache layer.
 type Cache[T any] interface {
 	// Get retrieves a value for the given key. The boolean return
 	// indicates whether the key was found. An error is returned if
@@ -41,6 +48,8 @@ type InMemoryCache[T any] struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	maxEntries    int
+	maxMemory     int64
+	currentMemory atomic.Int64
 
 	hitCounter      prometheus.Counter
 	missCounter     prometheus.Counter
@@ -51,6 +60,7 @@ type InMemoryCache[T any] struct {
 
 type item[T any] struct {
 	value     T
+	size      int64
 	expiresAt time.Time
 	element   *list.Element
 }
@@ -71,6 +81,14 @@ func WithSweepInterval[T any](d time.Duration) InMemoryOption[T] {
 func WithMaxEntries[T any](n int) InMemoryOption[T] {
 	return func(c *InMemoryCache[T]) {
 		c.maxEntries = n
+	}
+}
+
+// WithMaxMemory sets the maximum memory in bytes the cache can hold.
+// A non-positive value means the memory size is unbounded.
+func WithMaxMemory[T any](bytes int64) InMemoryOption[T] {
+	return func(c *InMemoryCache[T]) {
+		c.maxMemory = bytes
 	}
 }
 
@@ -173,6 +191,7 @@ func (c *InMemoryCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 		// remove expired item
 		c.order.Remove(it.element)
 		delete(c.items, key)
+		c.currentMemory.Add(-it.size)
 		c.mu.Unlock()
 		c.misses.Add(1)
 		if c.missCounter != nil {
@@ -245,19 +264,49 @@ func (c *InMemoryCache[T]) Set(ctx context.Context, key string, value T, ttl tim
 		return ctx.Err()
 	default:
 	}
+	size := EstimateSize(value)
 	if it, ok := c.items[key]; ok {
+		// update existing
+		c.currentMemory.Add(size - it.size)
 		it.value = value
+		it.size = size
 		it.expiresAt = exp
 		c.items[key] = it
 		c.order.MoveToFront(it.element)
 	} else {
+		// insert new
+		c.currentMemory.Add(size)
 		elem := c.order.PushFront(key)
-		c.items[key] = item[T]{value: value, expiresAt: exp, element: elem}
-		if c.maxEntries > 0 && len(c.items) > c.maxEntries {
+		c.items[key] = item[T]{value: value, size: size, expiresAt: exp, element: elem}
+	}
+
+	// Enforce MaxEntries
+	if c.maxEntries > 0 && len(c.items) > c.maxEntries {
+		tail := c.order.Back()
+		if tail != nil {
+			k := tail.Value.(string)
+			c.order.Remove(tail)
+			if it, found := c.items[k]; found {
+				c.currentMemory.Add(-it.size)
+				delete(c.items, k)
+				if c.evictionCounter != nil {
+					c.evictionCounter.Inc()
+				}
+			}
+		}
+	}
+
+	// Enforce MaxMemory
+	if c.maxMemory > 0 {
+		for c.currentMemory.Load() > c.maxMemory {
 			tail := c.order.Back()
-			if tail != nil {
-				k := tail.Value.(string)
-				c.order.Remove(tail)
+			if tail == nil {
+				break
+			}
+			k := tail.Value.(string)
+			c.order.Remove(tail)
+			if it, found := c.items[k]; found {
+				c.currentMemory.Add(-it.size)
 				delete(c.items, k)
 				if c.evictionCounter != nil {
 					c.evictionCounter.Inc()
@@ -306,6 +355,7 @@ func (c *InMemoryCache[T]) Invalidate(ctx context.Context, key string) error {
 	if it, ok := c.items[key]; ok {
 		c.order.Remove(it.element)
 		delete(c.items, key)
+		c.currentMemory.Add(-it.size)
 		if c.evictionCounter != nil {
 			c.evictionCounter.Inc()
 		}
@@ -347,6 +397,7 @@ func (c *InMemoryCache[T]) sweeper() {
 					if !it.expiresAt.IsZero() && now.After(it.expiresAt) {
 						c.order.Remove(it.element)
 						delete(c.items, k)
+						c.currentMemory.Add(-it.size)
 						if c.evictionCounter != nil {
 							c.evictionCounter.Inc()
 						}
@@ -405,4 +456,36 @@ func WithTracing[T any]() InMemoryOption[T] {
 	return func(c *InMemoryCache[T]) {
 		c.traceEnabled = true
 	}
+}
+
+// EstimateSize estimates the size of a value in bytes.
+func EstimateSize[T any](v T) int64 {
+	// 1. Check if it implements Sizer
+	if s, ok := any(v).(Sizer); ok {
+		return s.Size()
+	}
+
+	// 2. Common types
+	switch val := any(v).(type) {
+	case string:
+		return int64(len(val))
+	case []byte:
+		return int64(len(val))
+	case int, uint, int64, uint64, float64, complex128:
+		return 8
+	case int32, uint32, float32:
+		return 4
+	case int16, uint16:
+		return 2
+	case int8, uint8, bool:
+		return 1
+	}
+
+	// 3. Last resort: unsafe.Sizeof (Shallow)
+	return int64(unsafe.Sizeof(v))
+}
+
+// GetCurrentMemory returns the current memory usage of the cache.
+func (c *InMemoryCache[T]) GetCurrentMemory() int64 {
+	return c.currentMemory.Load()
 }
