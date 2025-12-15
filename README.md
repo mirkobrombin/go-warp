@@ -34,7 +34,6 @@ Results from `bench/` suite running on a standard developer machine (Docker/Podm
 | Ristretto | Local Cache | ~12,700,000 | 79 ns | Raw cache speed (no Warp features). |
 | Redis | Remote | ~98,000 | 10.2 µs | Network roundtrip required. |
 | DragonFly | Remote | ~42,000* | 23.0 µs | *Client-side bottleneck.* |
-
 | **Warp Proxy** | **Sidecar (Node.js)** | **~250,000** | **-** | **Pipelined (Batch=50).** |
 | **Warp Proxy** | **Sidecar (Python)** | **~95,000** | **-** | **Pipelined (Batch=50).** |
 
