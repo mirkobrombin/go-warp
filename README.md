@@ -109,6 +109,6 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 ## IA
 
-I am using Gemini, to help me write the documentation and debug issues, since the cocebase is really complex and I am not a Caching expert. I want to make sure I am not missing anything important as this library aims to be used in critical production systems.
+I am using Gemini, to help me write the documentation and debug issues, since the cocebase is really large. I want to make sure I am not missing anything important as this library aims to be used in critical production systems.
 
 I am just honest and transparent. Peace and love.
