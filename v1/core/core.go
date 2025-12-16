@@ -313,6 +313,88 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		return zero, err
 	} else if ok {
 		now := time.Now()
+		
+		reg.mu.Lock()
+		currentTTL := reg.currentTTL
+		reg.mu.Unlock()
+
+		// Fail-Safe: Check if the value is logically expired (stale)
+		isStale := false
+		if reg.ttlOpts.FailSafeGracePeriod > 0 {
+			if now.After(v.Timestamp.Add(currentTTL)) {
+				isStale = true
+			}
+		}
+
+		if isStale {
+			if w.store != nil {
+				// Try to refresh from source
+				vInterface, errS, _ := w.group.Do(key, func() (interface{}, error) {
+					// Apply SoftTimeout if configured
+					fetchCtx := ctx
+					if reg.ttlOpts.SoftTimeout > 0 {
+						var cancel context.CancelFunc
+						fetchCtx, cancel = context.WithTimeout(ctx, reg.ttlOpts.SoftTimeout)
+						defer cancel()
+					}
+
+					val, ok, err := w.store.Get(fetchCtx, key)
+					if err != nil {
+						return nil, err
+					}
+					if !ok {
+						return nil, ErrNotFound
+					}
+					now := time.Now()
+					return merge.Value[T]{Data: val, Timestamp: now}, nil
+				})
+
+				if errS != nil {
+					// Source failed: return stale data if error is not NotFound
+					// This catches both store errors and SoftTimeout (DeadlineExceeded)
+					if !errors.Is(errS, ErrNotFound) {
+						// Log differently for timeout vs error
+						if errors.Is(errS, context.DeadlineExceeded) {
+							slog.Warn("warp: soft timeout activated", "key", key)
+						} else {
+							slog.Warn("warp: fail-safe activated", "key", key, "error", errS)
+						}
+						
+						if w.hitCounter != nil {
+							w.hitCounter.Inc()
+						}
+						return v.Data, nil
+					}
+					// If ErrNotFound, fall through to return error (do not return stale)
+					return v.Data, ErrNotFound
+				} else {
+					// Source success: update cache and return new
+					mv := vInterface.(merge.Value[T])
+					
+					ttl := currentTTL
+					if reg.ttlStrategy != nil {
+						ttl = reg.ttlStrategy.TTL(key)
+					}
+					
+					reg.mu.Lock()
+					reg.currentTTL = ttl
+					reg.lastAccess = mv.Timestamp
+					reg.mu.Unlock()
+					
+					effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+					_ = w.cache.Set(ctx, key, mv, effectiveTTL)
+					
+					if w.hitCounter != nil {
+						w.hitCounter.Inc()
+					}
+					if w.traceEnabled {
+						span.SetAttributes(attribute.String("warp.core.result", "hit_refreshed"))
+					}
+					return mv.Data, nil
+				}
+			}
+		}
+
 		if reg.ttlStrategy != nil {
 			if reg.ttlOpts.Sliding || reg.ttlOpts.FreqThreshold > 0 {
 				ttl := reg.ttlStrategy.TTL(key)
@@ -328,7 +410,8 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 					reg.lastAccess = now
 					reg.mu.Unlock()
 				}
-				_ = w.cache.Set(ctx, key, v, ttl)
+				effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+				_ = w.cache.Set(ctx, key, v, effectiveTTL)
 			}
 		} else if reg.ttlOpts.Sliding || reg.ttlOpts.FreqThreshold > 0 {
 			reg.mu.Lock()
@@ -336,8 +419,77 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 			reg.currentTTL = ttl
 			reg.lastAccess = now
 			reg.mu.Unlock()
-			_ = w.cache.Set(ctx, key, v, ttl)
+			effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+			_ = w.cache.Set(ctx, key, v, effectiveTTL)
 		}
+		// Eager Refresh: If the item is fresh but close to expiration, trigger a background refresh
+		if reg.ttlOpts.EagerRefreshThreshold > 0 && w.store != nil {
+			reg.mu.Lock()
+			currentTTL := reg.currentTTL // Use the current logical TTL
+			reg.mu.Unlock()
+
+			logicalExpiry := v.Timestamp.Add(currentTTL)
+			remainingTTL := logicalExpiry.Sub(now) // 'now' is from the outer scope, correct
+
+			// Ensure currentTTL is positive to avoid division by zero or negative ratio
+			if currentTTL > 0 && float64(remainingTTL)/float64(currentTTL) <= reg.ttlOpts.EagerRefreshThreshold {
+				slog.Debug("warp: eager refresh triggered", "key", key)
+				go func() {
+					// Use context.WithoutCancel to ensure background refresh can complete independently
+					refreshCtx := context.WithoutCancel(context.Background())
+
+					// The singleflight group handles deduplication of concurrent refresh attempts
+					vInterface, errS, _ := w.group.Do(key, func() (interface{}, error) {
+						// SoftTimeout applies to eager refresh as well
+						fetchCtx := refreshCtx
+						if reg.ttlOpts.SoftTimeout > 0 {
+							var cancel context.CancelFunc
+							fetchCtx, cancel = context.WithTimeout(refreshCtx, reg.ttlOpts.SoftTimeout)
+							defer cancel()
+						}
+						
+						val, ok, err := w.store.Get(fetchCtx, key)
+						if err != nil {
+							slog.Error("warp: eager refresh failed", "key", key, "error", err)
+							return nil, err
+						}
+						if !ok {
+							slog.Debug("warp: eager refresh found no data in store", "key", key)
+							return nil, ErrNotFound
+						}
+						nowRefresh := time.Now() // Use current time for refresh
+						return merge.Value[T]{Data: val, Timestamp: nowRefresh}, nil
+					})
+
+					if errS != nil {
+						if !errors.Is(errS, ErrNotFound) && !errors.Is(errS, context.DeadlineExceeded) {
+							slog.Error("warp: eager refresh completed with error", "key", key, "error", errS)
+						}
+						return // Nothing to update if fetch failed
+					}
+
+					mv := vInterface.(merge.Value[T])
+					
+					// Re-evaluate TTL in case strategy changed
+					refreshTTL := currentTTL // Start with currentTTL
+					if reg.ttlStrategy != nil {
+						refreshTTL = reg.ttlStrategy.TTL(key) // Apply dynamic TTL if any
+					}
+
+					reg.mu.Lock()
+					reg.currentTTL = refreshTTL
+					reg.lastAccess = mv.Timestamp
+					reg.mu.Unlock()
+
+					effectiveRefreshTTL := refreshTTL + reg.ttlOpts.FailSafeGracePeriod
+					if err := w.cache.Set(refreshCtx, key, mv, effectiveRefreshTTL); err != nil {
+						slog.Error("warp: eager refresh failed to set cache", "key", key, "error", err)
+					}
+					slog.Debug("warp: eager refresh completed successfully", "key", key)
+				}()
+			}
+		}
+
 		if w.hitCounter != nil {
 			w.hitCounter.Inc()
 		}
@@ -382,7 +534,9 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		reg.currentTTL = ttl
 		reg.lastAccess = mv.Timestamp
 		reg.mu.Unlock()
-		_ = w.cache.Set(ctx, key, mv, ttl)
+		
+		effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+		_ = w.cache.Set(ctx, key, mv, effectiveTTL)
 		return mv.Data, nil
 	}
 	var zero T
@@ -493,8 +647,11 @@ func (w *Warp[T]) Set(ctx context.Context, key string, value T) error {
 	if reg.ttlStrategy != nil {
 		ttl = reg.ttlStrategy.TTL(key)
 	}
+	// FailSafe: Extend physical TTL in cache to allow for stale retrieval
+	effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+
 	applyLocal := func() error {
-		if err := w.cache.Set(ctx, key, newVal, ttl); err != nil {
+		if err := w.cache.Set(ctx, key, newVal, effectiveTTL); err != nil {
 			return err
 		}
 		if w.store != nil {
@@ -719,7 +876,9 @@ func (w *Warp[T]) Warmup(ctx context.Context) {
 		reg.currentTTL = ttl
 		reg.lastAccess = now
 		reg.mu.Unlock()
-		_ = w.cache.Set(ctx, r.key, mv, ttl)
+		
+		effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+		_ = w.cache.Set(ctx, r.key, mv, effectiveTTL)
 	}
 }
 
@@ -832,8 +991,11 @@ func (t *Txn[T]) Commit() error {
 		if reg.ttlStrategy != nil {
 			ttl = reg.ttlStrategy.TTL(key)
 		}
+		
+		effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+
 		newValCopy := newVal
-		ttlCopy := ttl
+		ttlCopy := effectiveTTL
 		nowCopy := now
 		regCopy := reg
 

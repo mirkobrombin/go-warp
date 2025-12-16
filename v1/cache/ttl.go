@@ -28,6 +28,9 @@ type TTLOptions struct {
 	Decrement     time.Duration
 	MinTTL        time.Duration
 	MaxTTL        time.Duration
+	FailSafeGracePeriod time.Duration
+	SoftTimeout         time.Duration
+	EagerRefreshThreshold float64
 }
 
 // TTLOption mutates TTLOptions.
@@ -35,6 +38,35 @@ type TTLOption func(*TTLOptions)
 
 // WithSliding enables sliding expiration for a key.
 func WithSliding() TTLOption { return func(o *TTLOptions) { o.Sliding = true } }
+
+// WithFailSafe enables the stale-if-error pattern.
+// If the backend fails, the cache will return the expired value if it is within the grace period.
+func WithFailSafe(grace time.Duration) TTLOption {
+	return func(o *TTLOptions) {
+		o.FailSafeGracePeriod = grace
+	}
+}
+
+// WithSoftTimeout sets a timeout for backend fetch operations.
+// If the backend takes longer than the duration, the cache returns the stale value (if available)
+// instead of waiting or failing.
+func WithSoftTimeout(d time.Duration) TTLOption {
+	return func(o *TTLOptions) {
+		o.SoftTimeout = d
+	}
+}
+
+// WithEagerRefresh enables proactive background refreshing of cache entries.
+// If an item's remaining TTL falls below the specified threshold (e.g., 0.1 for 10%),
+// a refresh is triggered in the background, serving the current item immediately.
+// The threshold must be between 0.0 and 1.0.
+func WithEagerRefresh(threshold float64) TTLOption {
+	return func(o *TTLOptions) {
+		if threshold >= 0.0 && threshold <= 1.0 {
+			o.EagerRefreshThreshold = threshold
+		}
+	}
+}
 
 // WithDynamicTTL configures simple frequency based TTL adjustments.
 //
