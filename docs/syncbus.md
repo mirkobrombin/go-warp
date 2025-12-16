@@ -36,23 +36,26 @@ Wraps a Go-Redis client using Pub/Sub.
 
 ```go
 type Bus interface {
-    // Publish broadcasts an invalidation for key.
-    Publish(ctx context.Context, key string) error
+    // Publish broadcasts an invalidation for key, optionally with PublishOptions.
+    Publish(ctx context.Context, key string, opts ...PublishOption) error
 
-    // PublishAndAwait broadcasts and waits for 'replicas' acknowledgements.
+    // PublishAndAwait broadcasts and waits for 'replicas' acknowledgements, optionally with PublishOptions.
     // Returns ErrQuorumNotSatisfied if timeout/failure.
-    PublishAndAwait(ctx context.Context, key string, replicas int) error
+    PublishAndAwait(ctx context.Context, key string, replicas int, opts ...PublishOption) error
+
+    // PublishAndAwaitTopology broadcasts and waits for acknowledgements from a minimum number of zones.
+    PublishAndAwaitTopology(ctx context.Context, key string, minZones int, opts ...PublishOption) error
 
     // Subscribe returns a channel that receives events for key.
-    Subscribe(ctx context.Context, key string) (chan struct{}, error)
+    Subscribe(ctx context.Context, key string) (<-chan Event, error)
 
     // Unsubscribe stops listening.
-    Unsubscribe(ctx context.Context, key string, ch chan struct{}) error
+    Unsubscribe(ctx context.Context, key string, ch <-chan Event) error
 
     // Lease methods
     RevokeLease(ctx context.Context, id string) error
-    SubscribeLease(ctx context.Context, id string) (chan struct{}, error)
-    UnsubscribeLease(ctx context.Context, id string, ch chan struct{}) error
+    SubscribeLease(ctx context.Context, id string) (<-chan Event, error)
+    UnsubscribeLease(ctx context.Context, id string, ch <-chan Event) error
 }
 ```
 
@@ -87,3 +90,7 @@ When you perform a `Set` or `Invalidate` operation in a distributed mode:
 ### Adaptive Batching & Compression
 
 To handle high-throughput scenarios, the `RedisBus` implements **Adaptive Batching**. If the invalidation rate exceeds a threshold, events are automatically buffered (10ms window), compressed using **Gzip**, and sent as a single aggregated payload. This drastically reduces network IO and Redis CPU usage during bursts.
+
+### Adaptive Backplane (Publish Timeout)
+
+To ensure the stability and responsiveness of the application, Warp's `syncbus` integration includes an **Adaptive Backplane** mechanism. This is configured via `core.WithPublishTimeout`, which sets a timeout for background publish operations in `ModeEventualDistributed`. If the message bus becomes unresponsive or slow, the publish operation will time out, preventing goroutine leaks and ensuring local operations are not blocked indefinitely. Errors are propagated through the `Warp.PublishErrors()` channel.

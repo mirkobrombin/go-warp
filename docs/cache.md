@@ -18,6 +18,14 @@ func NewInMemory[T any](opts ...InMemoryOption[T]) *InMemoryCache[T]
 - **`WithSweepInterval(d time.Duration)`**: Sets how often the background sweeper runs to remove expired items. Default is 1 minute.
 - **`WithMetrics(reg prometheus.Registerer)`**: Registers Prometheus metrics.
 
+### `NewResilient`
+
+Wraps an existing `Cache` implementation with **Cache Resiliency**. This decorator suppresses errors from the underlying cache operations (Get, Set, Invalidate), logs them as warnings, and ensures application stability by treating cache failures as cache misses or successful (but skipped) writes.
+
+```go
+func NewResilient[T any](inner Cache[T]) *ResilientCache[T]
+```
+
 ### `Close`
 
 ```go
@@ -66,6 +74,15 @@ type Cache[T any] interface {
 
 ## Features
 
+### Advanced TTL Options (`cache.TTLOption`)
+
+These options can be passed to `Warp.Register` and `Warp.RegisterDynamicTTL`.
+
+- **`WithSliding()`**: Resets the TTL to its original value on every access.
+- **`WithFailSafe(grace time.Duration)`**: Enables the **Fail-Safe** (Stale-If-Error) pattern. If the backend fails, the cache will return the expired value if it is within the specified grace period, improving resilience.
+- **`WithSoftTimeout(d time.Duration)`**: Sets a **Soft Timeout** for backend fetch operations. If the backend takes longer than the duration, the cache returns the stale value (if available) instead of waiting or failing, protecting latency.
+- **`WithEagerRefresh(threshold float64)`**: Enables **Eager Refresh**. If an item's remaining TTL falls below the specified threshold (e.g., `0.1` for 10%), a refresh is triggered in the background while serving the current item, ensuring data is always fresh for users. The threshold must be between `0.0` and `1.0`.
+
 ### Adaptive TTL
 
 One of Warp's unique features is **Adaptive TTL**. Instead of a fixed expiration time, the TTL can adjust dynamically based on access patterns.
@@ -75,19 +92,3 @@ One of Warp's unique features is **Adaptive TTL**. Instead of a fixed expiration
 strategy := cache.NewAdaptiveTTLStrategy(time.Minute, time.Hour, 1.5)
 w.RegisterDynamicTTL("product:*", core.ModeEventualDistributed, strategy)
 ```
-
-### Sliding TTL
-
-Resets the TTL to its original value on every access.
-
-```go
-w.Register("session:*", core.ModeStrongLocal, 10*time.Minute, cache.WithSlidingTTL(true))
-```
-
-### Serialization (Codecs)
-
-The cache module supports pluggable serialization for optimized performance.
-
-- **`JSONCodec`** (Default): Uses standard `encoding/json`. Good compatibility, higher CPU/Memory usage.
-- **`GobCodec`**: Uses Go's native `encoding/gob`. Faster than JSON for Go-to-Go systems.
-- **`ByteCodec`**: **Zero-Allocation / Zero-Copy**. Fails if values are not `[]byte`. Use this for raw byte payloads or pre-serialized data for maximum throughput (benchmarks show ~37 allocs -> 0 allocs).

@@ -75,6 +75,14 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error)
 - Returns `ErrNotFound` if key is missing in both Cache and Store.
 - Returns `ErrUnregistered` if key was not registered.
 
+### `GetOrSet`
+
+Retrieves a value from the cache. If the key is not found, it executes the provided loader function, stores the result in the cache, and returns it. Concurrent calls for the same key are deduplicated (singleflight). The key must be registered beforehand.
+
+```go
+func (w *Warp[T]) GetOrSet(ctx context.Context, key string, loader func(context.Context) (T, error)) (T, error)
+```
+
 ### `Set`
 
 Updates a value.
@@ -115,7 +123,7 @@ txn.CompareAndSwap("k3", "old", "new")
 err := txn.Commit()
 ```
 
-- **Commit**: Applies all operations atomically. If using `ModeStrongDistributed`, it waits for quorum for *all* keys before applying *any*.
+- **Commit**: Applies all operations atomically. If using `ModeStrongDistributed`, it waits for a quorum for *all* keys before applying *any*.
 
 ### `Unregister`
 
@@ -144,6 +152,20 @@ Returns a channel to listen for asynchronous errors occurring during background 
 func WithMetrics[T any](reg prometheus.Registerer) Option[T]
 ```
 Enables Prometheus metrics collection for core operations.
+
+### `WithCacheResiliency`
+
+```go
+func WithCacheResiliency[T any]() Option[T]
+```
+Enables **Cache Resiliency** (L2 Fail-Safe pattern). If the underlying cache (L1 or L2) returns an error (e.g., connection down), Warp will suppress the error and proceed as if it were a cache miss (for `Get`) or a successful operation (for `Set`/`Invalidate`), ensuring application stability. Errors are logged as warnings.
+
+### `WithPublishTimeout`
+
+```go
+func WithPublishTimeout[T any](d time.Duration) Option[T]
+```
+Sets a timeout for background `syncbus` publish operations when using `ModeEventualDistributed`. This prevents goroutine leaks if the message bus becomes unresponsive, ensuring adaptive backplane behavior.
 
 ### `GrantLease` / `RevokeLease`
 
