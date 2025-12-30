@@ -61,6 +61,11 @@ Results from `bench/` suite running on a standard developer machine (Docker/Podm
   - [Sidecar](docs/sidecar.md): Polyglot proxy (RESP protocol).
 - **[Glossary](docs/glossary.md)**: Terminology definition.
 
+## Client Libraries
+
+- **[Warp Store (JS)](warp-store/README.md)**: A high-performance, dual-layer (Memory + IndexedDB) caching store for frontend applications. Supports offline mode, session restoration, and is designed to work seamlessly with Warp's backend concepts.
+- **[Warp Sidecar](docs/sidecar.md)**: A polyglot proxy that allows you to access Warp's unified state from any language.
+
 ## Installation
 
 ```bash
