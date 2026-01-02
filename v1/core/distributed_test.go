@@ -113,6 +113,10 @@ func (b *fakeQuorumBus) IsHealthy() bool {
 	return true
 }
 
+func (b *fakeQuorumBus) Peers() []string {
+	return nil
+}
+
 func TestDistributedInvalidation(t *testing.T) {
 	ctx := context.Background()
 	mr, err := miniredis.Run()

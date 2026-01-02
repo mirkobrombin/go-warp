@@ -84,7 +84,7 @@ jobs:
           go-version: stable
       
       - name: Run Benchmarks
-        run: go run bench/main.go -target=warp-local,warp-redis,ristretto,redis > benchmark_results.txt
+        run: go run cmd/bench/main.go -target=warp-local,warp-redis,ristretto,redis > benchmark_results.txt
         env:
           WARP_TEST_REDIS_ADDR: localhost:6379
 

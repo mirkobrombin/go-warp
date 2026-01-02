@@ -68,6 +68,7 @@ type Bus interface {
 	SubscribeLease(ctx context.Context, id string) (<-chan Event, error)
 	UnsubscribeLease(ctx context.Context, id string, ch <-chan Event) error
 	IsHealthy() bool
+	Peers() []string
 }
 
 // InMemoryBus is a local implementation of Bus mainly for testing.
@@ -87,6 +88,11 @@ func NewInMemoryBus() *InMemoryBus {
 // IsHealthy implements Bus.IsHealthy.
 func (b *InMemoryBus) IsHealthy() bool {
 	return true
+}
+
+// Peers implements Bus.Peers.
+func (b *InMemoryBus) Peers() []string {
+	return nil
 }
 
 // Publish implements Bus.Publish.

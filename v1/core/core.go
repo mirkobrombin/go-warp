@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"errors"
-	"hash/fnv"
 	"log/slog"
 	"reflect"
 	"runtime"
@@ -51,7 +50,7 @@ type regShard struct {
 	regs map[string]*registration
 }
 
-const regShardCount = 32
+const regShardCount = 512
 
 // Warp orchestrates the interaction between cache, merge engine and sync bus.
 type Warp[T any] struct {
@@ -136,10 +135,23 @@ func WithPublishTimeout[T any](d time.Duration) Option[T] {
 	}
 }
 
+const (
+	offset32 = 2166136261
+	prime32  = 16777619
+)
+
+func hashString(key string) uint32 {
+	hash := uint32(offset32)
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
+		hash *= prime32
+	}
+	return hash
+}
+
 func (w *Warp[T]) shard(key string) *regShard {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(key))
-	return &w.shards[h.Sum32()%regShardCount]
+	h := hashString(key)
+	return &w.shards[h%regShardCount]
 }
 
 func (w *Warp[T]) getReg(key string) (*registration, bool) {
@@ -203,7 +215,27 @@ func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration, opts ...cac
 		currentTTL: ttl,
 		quorum:     1,
 	}
+
+	// Auto-subscribe to bus for distributed modes
+	if (mode == ModeEventualDistributed || mode == ModeStrongDistributed) && w.bus != nil {
+		go w.listenForInvalidations(key)
+	}
+
 	return true
+}
+
+// listenForInvalidations subscribes to the bus for a key and invalidates L1 on events.
+func (w *Warp[T]) listenForInvalidations(key string) {
+	ctx := context.Background()
+	ch, err := w.bus.Subscribe(ctx, key)
+	if err != nil {
+		slog.Error("warp: failed to subscribe to bus for key", "key", key, "error", err)
+		return
+	}
+
+	for evt := range ch {
+		_ = w.cache.Invalidate(ctx, evt.Key)
+	}
 }
 
 // RegisterDynamicTTL registers a key with a consistency mode and a dynamic TTL
@@ -229,6 +261,30 @@ func (w *Warp[T]) Unregister(key string) {
 	shard.Lock()
 	delete(shard.regs, key)
 	shard.Unlock()
+}
+
+// Peers returns the list of discovered peers from the underlying sync bus.
+func (w *Warp[T]) Peers() []string {
+	if w.bus == nil {
+		return nil
+	}
+	return w.bus.Peers()
+}
+
+// Subscribe returns a channel of invalidation events for a key.
+func (w *Warp[T]) Subscribe(ctx context.Context, key string) (<-chan syncbus.Event, error) {
+	if w.bus == nil {
+		return nil, ErrBusRequired
+	}
+	return w.bus.Subscribe(ctx, key)
+}
+
+// Unsubscribe cancels an invalidation subscription.
+func (w *Warp[T]) Unsubscribe(ctx context.Context, key string, ch <-chan syncbus.Event) error {
+	if w.bus == nil {
+		return ErrBusRequired
+	}
+	return w.bus.Unsubscribe(ctx, key, ch)
 }
 
 // SetQuorum configures the quorum size for strong distributed operations on a key.
@@ -294,12 +350,9 @@ var ErrCASMismatch = errors.New("warp: cas mismatch")
 // ErrBusRequired is returned when a distributed mode is used without a sync bus.
 var ErrBusRequired = errors.New("warp: sync bus required for distributed mode")
 
-// Get retrieves a value from the cache.
 func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
-	if w.hitCounter != nil {
-		metrics.GetCounter.Inc()
-	}
-
+	var zero T
+	// Fast path for registration lookup: avoid sharding if possible or use a more direct approach
 	var span trace.Span
 	var start time.Time
 	if w.traceEnabled {
@@ -321,30 +374,37 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 			}
 		}()
 	}
+
 	shard := w.shard(key)
 	shard.RLock()
 	reg, ok := shard.regs[key]
 	shard.RUnlock()
 	if !ok {
-		var zero T
 		return zero, ErrUnregistered
 	}
-	if reg.ttlStrategy != nil {
-		reg.ttlStrategy.Record(key)
-	}
-	if v, ok, err := w.cache.Get(ctx, key); err != nil {
-		slog.Error("cache get failed", "key", key, "error", err)
-		var zero T
-		return zero, err
-	} else if ok {
-		now := time.Now()
 
+	// Hot path for L1 Hit
+	if v, ok, err := w.cache.Get(ctx, key); err == nil && ok {
+		// Minimum work for standard path
+		if reg.ttlOpts.Sliding == false && reg.ttlOpts.EagerRefreshThreshold == 0 && reg.ttlOpts.FailSafeGracePeriod == 0 && reg.ttlStrategy == nil && !w.traceEnabled && w.latencyHist == nil {
+			if w.hitCounter != nil {
+				w.hitCounter.Inc()
+			}
+			return v.Data, nil
+		}
+
+		// Fallback to slower logic if advanced features are enabled
+		now := time.Now()
+		if reg.ttlStrategy != nil {
+			reg.ttlStrategy.Record(key)
+		}
+
+		// Fail-Safe: Check if the value is logically expired (stale)
+		isStale := false
 		reg.mu.Lock()
 		currentTTL := reg.currentTTL
 		reg.mu.Unlock()
 
-		// Fail-Safe: Check if the value is logically expired (stale)
-		isStale := false
 		if reg.ttlOpts.FailSafeGracePeriod > 0 {
 			if now.After(v.Timestamp.Add(currentTTL)) {
 				isStale = true
@@ -454,7 +514,7 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 			reg.mu.Unlock()
 
 			logicalExpiry := v.Timestamp.Add(currentTTL)
-			remainingTTL := logicalExpiry.Sub(now) // 'now' is from the outer scope, correct
+			remainingTTL := logicalExpiry.Sub(now)
 
 			// Ensure currentTTL is positive to avoid division by zero or negative ratio
 			if currentTTL > 0 && float64(remainingTTL)/float64(currentTTL) <= reg.ttlOpts.EagerRefreshThreshold {
@@ -564,7 +624,6 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		_ = w.cache.Set(ctx, key, mv, effectiveTTL)
 		return mv.Data, nil
 	}
-	var zero T
 	return zero, ErrNotFound
 }
 
@@ -1028,6 +1087,11 @@ func (w *Warp[T]) Invalidate(ctx context.Context, key string) error {
 		}
 	}
 	return nil
+}
+
+// InvalidateLocal removes a key from the local cache only, without publishing to the bus.
+func (w *Warp[T]) InvalidateLocal(ctx context.Context, key string) error {
+	return w.cache.Invalidate(ctx, key)
 }
 
 // Merge registers a custom merge function for a key.

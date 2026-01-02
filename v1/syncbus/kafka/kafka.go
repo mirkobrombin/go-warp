@@ -209,6 +209,11 @@ func (b *KafkaBus) IsHealthy() bool {
 	return true
 }
 
+// Peers implements Bus.Peers.
+func (b *KafkaBus) Peers() []string {
+	return nil
+}
+
 // Close releases resources used by the KafkaBus.
 func (b *KafkaBus) Close() error {
 	b.mu.Lock()

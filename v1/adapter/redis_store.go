@@ -1,10 +1,8 @@
 package adapter
 
 import (
-	"bytes"
 	"context"
 	stdErrors "errors"
-	"sync"
 	"time"
 
 	"github.com/mirkobrombin/go-warp/v1/cache"
@@ -13,12 +11,6 @@ import (
 )
 
 const defaultRedisOpTimeout = 5 * time.Second
-
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
-}
 
 // RedisStore implements Store using a Redis backend.
 type RedisStore[T any] struct {

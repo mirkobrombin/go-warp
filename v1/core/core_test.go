@@ -60,6 +60,10 @@ func (b errBus) IsHealthy() bool {
 	return true
 }
 
+func (b errBus) Peers() []string {
+	return nil
+}
+
 type slowBus struct {
 	delay time.Duration
 	done  chan struct{}
@@ -95,6 +99,10 @@ func (b *slowBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus
 	return nil, nil
 }
 func (b *slowBus) UnsubscribeLease(ctx context.Context, id string, ch <-chan syncbus.Event) error {
+	return nil
+}
+
+func (b *slowBus) Peers() []string {
 	return nil
 }
 

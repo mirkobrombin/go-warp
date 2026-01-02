@@ -28,6 +28,7 @@ const (
 )
 
 type BatchPayload struct {
+	Nonce   string              `json:"n"` // Unique per batch to prevent false dedup
 	Keys    []string            `json:"k"`
 	Regions []string            `json:"r,omitempty"`
 	Vectors []map[string]uint64 `json:"v,omitempty"`
@@ -356,6 +357,7 @@ func (b *RedisBus) runBatcher() {
 		}
 
 		payload := BatchPayload{
+			Nonce:   uuid.NewString(), // Ensure payload is unique even for same keys
 			Keys:    make([]string, len(uniqueBatch)),
 			Regions: make([]string, len(uniqueBatch)),
 			Vectors: make([]map[string]uint64, len(uniqueBatch)),
@@ -517,6 +519,11 @@ func (b *RedisBus) reconnect() error {
 // IsHealthy implements Bus.IsHealthy.
 func (b *RedisBus) IsHealthy() bool {
 	return true
+}
+
+// Peers implements Bus.Peers.
+func (b *RedisBus) Peers() []string {
+	return nil
 }
 
 // Close releases resources used by the RedisBus.

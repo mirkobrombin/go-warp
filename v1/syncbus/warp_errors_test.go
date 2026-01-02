@@ -46,6 +46,10 @@ func (b *failingBus) IsHealthy() bool {
 	return true
 }
 
+func (b *failingBus) Peers() []string {
+	return nil
+}
+
 func TestWarpPublishError(t *testing.T) {
 	bus := &failingBus{publishErr: errors.New("publish failed")}
 	w := core.New[string](cache.NewInMemory[merge.Value[string]](), nil, bus, merge.NewEngine[string]())

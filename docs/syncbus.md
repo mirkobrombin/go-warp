@@ -12,6 +12,12 @@ func NewInMemoryBus() *InMemoryBus
 ```
 Creates a local bus. Useful for testing or single-node async architectures.
 
+#### `NewMeshBus`
+```go
+func NewMeshBus(opts mesh.MeshOptions) (*MeshBus, error)
+```
+Creates a P2P UDP bus for [Warp Mesh](./mesh.md).
+
 #### `NewNATSBus`
 ```go
 func NewNATSBus(nc *nats.Conn, subject string) *NATSBus

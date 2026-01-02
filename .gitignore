@@ -6,6 +6,7 @@
 /warp-cli
 /bench-tool
 /warp-bench-stress
+/smoke-app
 
 # Standard Go
 vendor/

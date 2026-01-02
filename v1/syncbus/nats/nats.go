@@ -203,6 +203,11 @@ func (b *NATSBus) IsHealthy() bool {
 	return true
 }
 
+// Peers implements Bus.Peers.
+func (b *NATSBus) Peers() []string {
+	return nil
+}
+
 // SubscribeLease subscribes to lease revocation events.
 func (b *NATSBus) SubscribeLease(ctx context.Context, id string) (<-chan syncbus.Event, error) {
 	return b.Subscribe(ctx, "lease:"+id)

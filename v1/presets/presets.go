@@ -6,6 +6,7 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/core"
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
+	"github.com/mirkobrombin/go-warp/v1/syncbus/mesh"
 	busredis "github.com/mirkobrombin/go-warp/v1/syncbus/redis"
 	redis "github.com/redis/go-redis/v9"
 )
@@ -50,6 +51,17 @@ func NewRedisStrong[T any](opts RedisOptions) *core.Warp[T] {
 	// But we can enable optimization flags here if needed.
 	// For now, it returns the same structure, but the naming guides the user intent.
 	return NewRedisEventual[T](opts)
+}
+
+// NewMeshEventual creates a Warp instance configured for Eventual Consistency
+// using Warp Mesh (UDP P2P) for synchronization and an in-memory L2 store.
+// This provides zero-infrastructure clustering for Go backends.
+func NewMeshEventual[T any](opts mesh.MeshOptions) *core.Warp[T] {
+	c := cache.NewInMemory[merge.Value[T]]()
+	s := adapter.NewInMemoryStore[T]()
+	bus, _ := mesh.NewMeshBus(opts)
+	engine := merge.NewEngine[T]()
+	return core.New[T](c, s, bus, engine)
 }
 
 // NewInMemoryStandalone creates a Warp instance that runs entirely in-memory

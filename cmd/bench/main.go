@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 	"github.com/mirkobrombin/go-warp/v1/core"
 	"github.com/mirkobrombin/go-warp/v1/presets"
+	"github.com/mirkobrombin/go-warp/v1/syncbus/mesh"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -35,7 +37,7 @@ func main() {
 
 	targets := strings.Split(*target, ",")
 	if *target == "all" {
-		targets = []string{"warp-local", "ristretto", "warp-redis", "redis", "dragonfly"}
+		targets = []string{"warp-local", "warp-mesh", "ristretto", "warp-redis", "redis", "dragonfly"}
 	}
 
 	fmt.Printf("| %-15s | %-10s | %-12s | %-12s |\n", "System", "Ops/sec", "Avg Latency", "P99 Latency")
@@ -60,6 +62,15 @@ func runBenchmark(name string, payload []byte) {
 	case "warp-local":
 		w := presets.NewInMemoryStandalone[[]byte]()
 		w.Register(key, core.ModeStrongLocal, time.Hour)
+		setFn = func(ctx context.Context, k string, v []byte) error { return w.Set(ctx, k, v) }
+		getFn = func(ctx context.Context, k string) error { _, err := w.Get(ctx, k); return err }
+
+	case "warp-mesh":
+		w := presets.NewMeshEventual[[]byte](mesh.MeshOptions{
+			Port:      7946,
+			Heartbeat: 1 * time.Hour,
+		})
+		w.Register(key, core.ModeEventualDistributed, time.Hour)
 		setFn = func(ctx context.Context, k string, v []byte) error { return w.Set(ctx, k, v) }
 		getFn = func(ctx context.Context, k string) error { _, err := w.Get(ctx, k); return err }
 
@@ -118,25 +129,25 @@ func runBenchmark(name string, payload []byte) {
 
 	var wg sync.WaitGroup
 	var ops int64
-
-	// Pre-allocate latencies to avoid allocs during bench (if possible)
-	// For simplicity, we just measure avg here. P99 requires histogram.
-	// Basic histogram logic.
+	totalReqs := *requests
+	latencies := make([]int64, totalReqs)
 
 	start := time.Now()
-	totalReqs := *requests
 	chunk := totalReqs / *concurrency
 
 	for i := 0; i < *concurrency; i++ {
 		wg.Add(1)
-		go func() {
+		go func(idx int) {
 			defer wg.Done()
+			offset := idx * chunk
 			for j := 0; j < chunk; j++ {
+				reqStart := time.Now()
 				if err := getFn(ctx, key); err == nil {
 					atomic.AddInt64(&ops, 1)
+					latencies[offset+j] = time.Since(reqStart).Nanoseconds()
 				}
 			}
-		}()
+		}(i)
 	}
 
 	wg.Wait()
@@ -150,5 +161,22 @@ func runBenchmark(name string, payload []byte) {
 	throughput := float64(ops) / elapsed.Seconds()
 	avgLat := float64(elapsed.Nanoseconds()) / float64(ops)
 
-	fmt.Printf("| %-15s | %-10.0f | %-12.0f | %-12s |\n", name, throughput, avgLat, "-")
+	// Calculate P99
+	var p99 string = "-"
+	validLats := make([]int64, 0, ops)
+	for _, l := range latencies {
+		if l > 0 {
+			validLats = append(validLats, l)
+		}
+	}
+	if len(validLats) > 0 {
+		sort.Slice(validLats, func(i, j int) bool { return validLats[i] < validLats[j] })
+		p99Idx := int(float64(len(validLats)) * 0.99)
+		if p99Idx >= len(validLats) {
+			p99Idx = len(validLats) - 1
+		}
+		p99 = fmt.Sprintf("%d", validLats[p99Idx])
+	}
+
+	fmt.Printf("| %-15s | %-10.0f | %-12.0f | %-12s |\n", name, throughput, avgLat, p99)
 }

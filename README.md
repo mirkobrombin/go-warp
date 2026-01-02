@@ -25,19 +25,20 @@ Most caching libraries are just... caches. You `Set` a key, and it sits there un
 
 ### Benchmarks
 
-Results from `bench/` suite running on a standard developer machine (Docker/Podman):
+Results from `cmd/bench/` suite running on a standard developer machine (Docker/Podman):
 
-| System | Mode | Ops/sec | Avg Latency | Notes |
+| System | Mode | Ops/sec | Avg Latency | P99 Latency |
 | :--- | :--- | :--- | :--- | :--- |
-| **Warp** | **Eventual (L2=Redis)** | **~2,727,000** | **367 ns** | **Hits L1 memory, syncs via Bus.** |
-| **Warp** | StrongLocal | ~2,650,000 | 377 ns | Pure in-memory (No network). |
-| Ristretto | Local Cache | ~12,170,000 | 82 ns | Raw cache speed (no Warp features). |
-| Redis | Remote | ~115,000 | 8.6 µs | Network roundtrip required. |
-| DragonFly | Remote | ~42,000* | 23.0 µs | *Client-side bottleneck.* |
-| **Warp Proxy** | **Sidecar (Node.js)** | **~250,000** | **-** | **Pipelined (Batch=50).** |
-| **Warp Proxy** | **Sidecar (Python)** | **~95,000** | **-** | **Pipelined (Batch=50).** |
+| **Warp** | **StrongLocal** | **~2,700,000** | **370 ns** | **0.6 ms** |
+| **Warp** | **Eventual (Mesh)** | **~3,000,000** | **330 ns** | **0.6 ms** |
+| **Warp** | **Eventual (L2=Redis)** | **~2,400,000** | **400 ns** | **0.8 ms** |
+| Ristretto | Local Cache | ~12,000,000 | 80 ns | 0.004 ms |
+| Redis | Remote | ~55,000 | 18 µs | 1.6 ms |
+| DragonFly | Remote | ~118,000 | 8.5 µs | 1.1 ms |
+| **Warp Proxy** | **Sidecar (Node.js)** | **~170,000** | **-** | **Pipelined (Batch=50)** |
+| **Warp Proxy** | **Sidecar (Python)** | **~80,000** | **-** | **Pipelined (Batch=50)** |
 
-> **Takeaway**: Warp allows you to access data **20x faster than standard Redis** by serving reads from memory (L1) while maintaining eventual consistency across the cluster.
+> **Takeaway**: Warp allows you to access data **~10-20x faster than standard Redis** by serving reads from memory (L1) while maintaining eventual consistency across the cluster.
 
 - **Need speed?** Use `ModeStrongLocal`.
 - **Need consistency?** Use `ModeEventualDistributed` and Warp will automatically notify other nodes when you update data.
@@ -52,7 +53,7 @@ Results from `bench/` suite running on a standard developer machine (Docker/Podm
 - **[Best Practices](docs/best-practices.md)**: Recommended patterns for common scenarios.
 - **[Modules](docs/overview.md)**:
   - [Cache](docs/cache.md): Adaptive TTL, Pluggable Backends.
-  - [Sync Bus](docs/syncbus.md): NATS, Kafka, Custom Adapters.
+  - [Sync Bus](docs/syncbus.md): NATS, Kafka, Warp Mesh (UDP/Gossip), Custom Adapters.
   - [Lock](docs/lock.md): Distributed Locking.
   - [Leases](docs/leases.md): Group Invalidation.
   - [Merge](docs/merge.md): Conflict Resolution.
@@ -106,6 +107,17 @@ func main() {
     val, _ := w.Get(ctx, "user:123")
     fmt.Println(val.Name)
 }
+```
+
+### Warp Mesh (Zero-Infra)
+
+Warp Mesh allows you to cluster your Go backends without Redis, NATS, or Kafka. It uses UDP Multicast for local discovery and a Unicast Gossip protocol for cloud environments.
+
+```go
+w := presets.NewMeshEventual[User](mesh.MeshOptions{
+    Port: 7946,
+    Peers: []string{"10.0.0.1:7946"}, // Static seeds for cloud
+})
 ```
 
 ## License

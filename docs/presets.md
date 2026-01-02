@@ -47,6 +47,22 @@ w.SetQuorum("config:*", 3)
 > [!NOTE]
 > Strong consistency requires all nodes to be reachable to satisfy quorum.
 
+### `NewMeshEventual`
+
+Creates a Warp instance using **Warp Mesh** (UDP P2P) for synchronization with zero external infrastructure.
+
+- **Architecture**:
+	- **L1**: In-Memory Cache.
+	- **L2**: In-Memory Store.
+	- **Bus**: Warp Mesh (UDP P2P).
+	- **Consistency**: Eventual (writes go to L1, invalidation propagated via Mesh).
+
+```go
+w := presets.NewMeshEventual[MyData](mesh.MeshOptions{
+	Port: 7946,
+})
+```
+
 ### `NewInMemoryStandalone`
 
 Creates a fully isolated Warp instance with **no external dependencies**. Useful for local development, testing, or simplistic single-node caching.

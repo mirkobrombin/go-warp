@@ -59,6 +59,10 @@ func (m *MockBusBlocked) UnsubscribeLease(ctx context.Context, id string, ch <-c
 
 func (m *MockBusBlocked) SetTopology(minZones int) {}
 
+func (m *MockBusBlocked) Peers() []string {
+	return nil
+}
+
 func TestBackplane_TimeoutPreventsLeak(t *testing.T) {
 	c := cache.NewInMemory[merge.Value[string]](cache.WithSweepInterval[merge.Value[string]](10 * time.Millisecond))
 
