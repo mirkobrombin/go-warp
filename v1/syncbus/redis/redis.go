@@ -529,6 +529,22 @@ func (b *RedisBus) Peers() []string {
 // Close releases resources used by the RedisBus.
 func (b *RedisBus) Close() error {
 	close(b.closeCh)
+
+	b.mu.Lock()
+	var subs []*redis.PubSub
+	for _, sub := range b.subs {
+		if sub.pubsub != nil {
+			subs = append(subs, sub.pubsub)
+		}
+	}
+	// Clear the map to ensure no further operations can use the subscriptions
+	b.subs = make(map[string]*redisSubscription)
+	b.mu.Unlock()
+
+	for _, ps := range subs {
+		_ = ps.Close()
+	}
+
 	b.wg.Wait()
 	return nil
 }
