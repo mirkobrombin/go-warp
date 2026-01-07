@@ -1,6 +1,6 @@
 {
     "name": "warp-store",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "A high-performance, dual-layer (Memory + IndexedDB) caching store with lease-based session management.",
     "main": "src/index.js",
     "module": "src/index.js",

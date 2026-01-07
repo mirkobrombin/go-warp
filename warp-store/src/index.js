@@ -159,6 +159,43 @@ class WarpClient {
         this._notify({ type: 'purge' });
     }
 
+    async _backgroundFetch(key, fetcher, ttlMs) {
+        try {
+            const fresh = await fetcher();
+            await this.set(key, fresh, ttlMs);
+        } catch (e) {
+            console.warn("WarpClient: Background fetch failed for key:", key, e);
+        }
+    }
+
+    /**
+     * Loads a value with Stale-While-Revalidate strategy.
+     * 1. If cached, returns it immediately and refreshes in background.
+     * 2. If missing/expired, waits for fetcher and sets it.
+     * 
+     * @param {string} key 
+     * @param {Function} fetcher - Async function that returns the value
+     * @param {number} [ttlMs=0] 
+     * @returns {Promise<*>}
+     */
+    async load(key, fetcher, ttlMs = 0) {
+        const cached = await this.get(key);
+
+        if (cached !== null) {
+            this._backgroundFetch(key, fetcher, ttlMs);
+            return cached;
+        }
+
+        try {
+            const fresh = await fetcher();
+            await this.set(key, fresh, ttlMs);
+            return fresh;
+        } catch (e) {
+            console.error("WarpClient: Fetch failed for key:", key, e);
+            throw e;
+        }
+    }
+
     _isExpired(entry) {
         if (!entry.expiresAt) return false;
         return Date.now() > entry.expiresAt;
