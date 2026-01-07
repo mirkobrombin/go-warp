@@ -2,11 +2,9 @@ import { L2Cache } from './l2';
 
 /**
  * WarpClient - A high-performance, dual-layer caching store (Framework Agnostic).
- * 
  * This class implements a "Warp" strategy for data persistence and access:
  * - **L1 (Level 1)**: In-memory Map. Fast access, volatile.
  * - **L2 (Level 2)**: Persistent storage using IndexedDB.
- * 
  * Reactivity is handled via a `subscribe` method, allowing integration with
  * any framework (Vue, React, Svelte, Vanilla).
  */
@@ -23,6 +21,9 @@ class WarpClient {
 
         // Subscribers for reactivity
         this.listeners = new Set();
+
+        // Deduplication map for in-flight requests
+        this.inflightRequests = new Map();
     }
 
     /**
@@ -81,23 +82,57 @@ class WarpClient {
     }
 
     /**
+     * Internal helper: Retrieves a raw entry without triggering expiration side-effects (deletion).
+     * Used by SWR strategies to access stale data.
+     * @param {string} key
+     * @returns {Promise<{value: *, expiresAt: number|null}|null>}
+     */
+    async _peek(key) {
+        // Check L1
+        if (this.l1.has(key)) {
+            return this.l1.get(key);
+        }
+
+        // Check L2
+        if (this.currentLease) {
+            try {
+                const entry = await this.l2.get(key);
+                // Verify lease, but ignore expiration for peek
+                if (entry && entry.leaseId === this.currentLease) {
+                    // Promote to L1 for future fast access
+                    const l1Entry = {
+                        value: entry.value,
+                        expiresAt: entry.expiresAt
+                    };
+                    this.l1.set(key, l1Entry);
+                    return l1Entry;
+                }
+            } catch (e) {
+                console.error("WarpClient L2 Peek Error:", e);
+            }
+        }
+        return null;
+    }
+
+    /**
      * Retrieves a value from the store (L1 -> L2).
+     * Enforces hard expiration: if expired, the value is deleted and null is returned.
      * @param {string} key
      * @returns {Promise<*|null>}
      */
     async get(key) {
+        // Check L1
         if (this.l1.has(key)) {
             const entry = this.l1.get(key);
             if (!this._isExpired(entry)) {
-
-                // Track hit for LRU or just return
                 return entry.value;
             } else {
                 this.l1.delete(key);
-                this._notify({ type: 'delete', key }); // Notify implicit expiration
+                this._notify({ type: 'delete', key });
             }
         }
 
+        // Check L2
         if (this.currentLease) {
             try {
                 const entry = await this.l2.get(key);
@@ -156,40 +191,96 @@ class WarpClient {
         await this.l2.clear();
         await this.l2.removeMeta('warp_lease');
         this.currentLease = null;
+        this.inflightRequests.clear(); // Clear pending requests
         this._notify({ type: 'purge' });
     }
 
-    async _backgroundFetch(key, fetcher, ttlMs) {
-        try {
-            const fresh = await fetcher();
-            await this.set(key, fresh, ttlMs);
-        } catch (e) {
-            console.warn("WarpClient: Background fetch failed for key:", key, e);
+    /**
+     * Internal helper to fetch and update the store.
+     * Implements request deduplication to prevent multiple identical fetches.
+     * @param {string} key 
+     * @param {Function} fetcher 
+     * @param {number} ttlMs 
+     * @returns {Promise<*>} The fresh value
+     */
+    async _fetchAndSet(key, fetcher, ttlMs) {
+        // Return existing promise if request is already in flight
+        if (this.inflightRequests.has(key)) {
+            return this.inflightRequests.get(key);
         }
+
+        const promise = (async () => {
+            try {
+                const fresh = await fetcher();
+                await this.set(key, fresh, ttlMs);
+                return fresh;
+            } catch (e) {
+                console.warn("WarpClient: Background fetch failed for key:", key, e);
+                throw e;
+            } finally {
+                this.inflightRequests.delete(key);
+            }
+        })();
+
+        this.inflightRequests.set(key, promise);
+        return promise;
     }
 
     /**
-     * Loads a value with Stale-While-Revalidate strategy.
-     * 1. If cached, returns it immediately and refreshes in background.
-     * 2. If missing/expired, waits for fetcher and sets it.
-     * 
+     * Loads a value with a configurable SWR (Stale-While-Revalidate) strategy.
+     * Returns an object compatible with reactive UI patterns:
+     * { value: any, refreshing: Promise<any>|null, fromCache: boolean }
+     * Strategy:
+     * 1. If cached & fresh -> Returns { value, refreshing: null }
+     * 2. If cached & stale & swr=true -> Returns { value, refreshing: Promise } (Non-blocking)
+     * 3. If cached & stale & swr=false -> Returns { value: null } (Blocking fetch needed)
+     * 4. If missing -> Blocking fetch -> Returns { value, refreshing: null }
      * @param {string} key 
      * @param {Function} fetcher - Async function that returns the value
-     * @param {number} [ttlMs=0] 
-     * @returns {Promise<*>}
+     * @param {Object|number} [options] - Options object or ttlMs (for backward compat)
+     * @returns {Promise<{value: *, refreshing: Promise<*>|null, fromCache: boolean}>}
      */
-    async load(key, fetcher, ttlMs = 0) {
-        const cached = await this.get(key);
+    async load(key, fetcher, options = {}) {
+        // Handle backward compatibility (ttlMs as 3rd arg)
+        const opts = typeof options === 'number' ? { ttlMs: options } : options;
+        const ttlMs = opts.ttlMs || 0;
+        const swr = opts.swr !== false;
 
-        if (cached !== null) {
-            this._backgroundFetch(key, fetcher, ttlMs);
-            return cached;
+        // Peek at data (ignoring expiration logic to retrieve stale data)
+        const entry = await this._peek(key);
+
+        const now = Date.now();
+        const hasData = entry !== null;
+        const isExpired = hasData && entry.expiresAt && now > entry.expiresAt;
+
+        const result = {
+            value: hasData ? entry.value : null,
+            refreshing: null,
+            fromCache: hasData
+        };
+
+        // Scenario: Data exists (Fresh or Stale)
+        if (hasData) {
+            if (isExpired) {
+                if (swr) {
+                    // Stale-While-Revalidate: Return stale value, fetch in background
+                    result.refreshing = this._fetchAndSet(key, fetcher, ttlMs);
+                    return result;
+                } else {
+                    // Stale but SWR disabled: Treat as cache miss
+                    result.value = null;
+                    result.fromCache = false;
+                }
+            } else {
+                // Fresh: Return immediately
+                return result;
+            }
         }
 
+        // Scenario: Cache Miss (or SWR disabled on expired) - Blocking Fetch
         try {
-            const fresh = await fetcher();
-            await this.set(key, fresh, ttlMs);
-            return fresh;
+            const fresh = await this._fetchAndSet(key, fetcher, ttlMs);
+            return { value: fresh, refreshing: null, fromCache: false };
         } catch (e) {
             console.error("WarpClient: Fetch failed for key:", key, e);
             throw e;
