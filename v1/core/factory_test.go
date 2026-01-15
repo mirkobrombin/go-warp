@@ -71,10 +71,13 @@ func TestGetOrSet_Singleflight(t *testing.T) {
 	ready := make(chan struct{})
 	block := make(chan struct{})
 
+	var once sync.Once
 	loader := func(ctx context.Context) (string, error) {
 		calls.Add(1)
-		close(ready) // Signal we started
-		<-block      // Wait to finish
+		once.Do(func() {
+			close(ready) // Signal we started
+		})
+		<-block // Wait to finish
 		return "concurrent-val", nil
 	}
 
@@ -108,17 +111,17 @@ func TestGetOrSet_Singleflight(t *testing.T) {
 func TestGetOrSet_FailSafe(t *testing.T) {
 	c := cache.NewInMemory[merge.Value[string]](cache.WithSweepInterval[merge.Value[string]](10 * time.Millisecond))
 	w := New[string](c, nil, nil, nil)
-	
+
 	key := "gos-key-fs"
 	// Register with FailSafe
 	w.Register(key, ModeStrongLocal, 10*time.Millisecond, cache.WithFailSafe(1*time.Hour))
-	
+
 	// Populate
 	w.Set(context.Background(), key, "stale-val")
-	
+
 	// Wait for expiration
 	time.Sleep(20 * time.Millisecond)
-	
+
 	// Loader fails
 	loader := func(ctx context.Context) (string, error) {
 		return "", errors.New("loader boom")

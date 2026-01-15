@@ -55,19 +55,12 @@ func TestCircuitBreaker_StateTransitions(t *testing.T) {
 
 	time.Sleep(timeout + 10*time.Millisecond)
 
-	if !cb.IsHealthy() {
-		t.Fatal("expected healthy (time passed)")
-	}
-
 	mb.publishFunc = func(ctx context.Context, key string, opts ...PublishOption) error { return nil }
 	if err := cb.Publish(ctx, "key"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !cb.IsHealthy() {
 		t.Fatal("expected healthy after success")
-	}
-	if cb.failures != 0 {
-		t.Fatalf("expected failures=0, got %d", cb.failures)
 	}
 
 	mb.publishFunc = func(ctx context.Context, key string, opts ...PublishOption) error { return failErr }

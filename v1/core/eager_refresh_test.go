@@ -59,7 +59,7 @@ func (m *MockStoreER[T]) Keys(ctx context.Context) ([]string, error) {
 
 func TestEagerRefresh_TriggersBackgroundUpdate(t *testing.T) {
 	c := cache.NewInMemory[merge.Value[string]](cache.WithSweepInterval[merge.Value[string]](10 * time.Millisecond))
-	
+
 	// Store takes 100ms to respond
 	store := &MockStoreER[string]{
 		data:  make(map[string]string),
@@ -75,7 +75,7 @@ func TestEagerRefresh_TriggersBackgroundUpdate(t *testing.T) {
 	// Register with:
 	// TTL: 200ms
 	// EagerRefreshThreshold: 0.5 (Refresh when 50% of TTL (100ms) is remaining)
-	w.Register(key, ModeStrongLocal, 200*time.Millisecond, 
+	w.Register(key, ModeStrongLocal, 200*time.Millisecond,
 		cache.WithEagerRefresh(0.5),
 	)
 
@@ -101,8 +101,8 @@ func TestEagerRefresh_TriggersBackgroundUpdate(t *testing.T) {
 	// Current timestamp for item is now + 100ms from start of test roughly.
 	// So, we want current time to be (creationTime + 100ms).
 	// Let's sleep 90ms from the last Get finish (which took 100ms).
-	time.Sleep(90 * time.Millisecond) // Total elapsed: 100ms (fetch) + 90ms (sleep) = 190ms. 
-									  // Remaining: 200ms - 190ms = 10ms. 10/200 = 0.05. Below 0.5 threshold.
+	time.Sleep(90 * time.Millisecond) // Total elapsed: 100ms (fetch) + 90ms (sleep) = 190ms.
+	// Remaining: 200ms - 190ms = 10ms. 10/200 = 0.05. Below 0.5 threshold.
 
 	// Change backend data to verify refresh
 	store.data[key] = val2
@@ -143,7 +143,7 @@ func TestEagerRefresh_TriggersBackgroundUpdate(t *testing.T) {
 
 func TestEagerRefresh_DoesNotTriggerIfTooFresh(t *testing.T) {
 	c := cache.NewInMemory[merge.Value[string]](cache.WithSweepInterval[merge.Value[string]](10 * time.Millisecond))
-	
+
 	store := &MockStoreER[string]{
 		data:  make(map[string]string),
 		delay: 10 * time.Millisecond,
@@ -153,24 +153,26 @@ func TestEagerRefresh_DoesNotTriggerIfTooFresh(t *testing.T) {
 	key := "er-key-2"
 	store.data[key] = "val-fresh"
 
-	w.Register(key, ModeStrongLocal, 100*time.Millisecond, 
+	w.Register(key, ModeStrongLocal, 100*time.Millisecond,
 		cache.WithEagerRefresh(0.2), // Refresh when 20% TTL (20ms) is remaining
 	)
 
 	// 1. Initial Populate
 	w.Get(context.Background(), key)
+	store.mu.Lock()
 	if store.refreshCall != 1 {
 		t.Errorf("Expected 1 store call, got %d", store.refreshCall)
 	}
-	store.mu.Lock()
 	store.refreshCall = 0
 	store.mu.Unlock()
 
 	// 2. Get again immediately (should not trigger eager refresh)
 	w.Get(context.Background(), key)
+	store.mu.Lock()
 	if store.refreshCall != 0 {
 		t.Errorf("Expected 0 store calls for eager refresh (too fresh), got %d", store.refreshCall)
 	}
+	store.mu.Unlock()
 
 	// 3. Wait until after eager refresh threshold but before TTL
 	// Total TTL 100ms. Eager refresh at 80ms elapsed.
@@ -179,27 +181,28 @@ func TestEagerRefresh_DoesNotTriggerIfTooFresh(t *testing.T) {
 	// 4. Get again (should trigger eager refresh)
 	w.Get(context.Background(), key)
 	time.Sleep(20 * time.Millisecond) // Give background goroutine time to complete
+	store.mu.Lock()
 	if store.refreshCall != 1 {
 		t.Errorf("Expected 1 store call for eager refresh (now within window), got %d", store.refreshCall)
 	}
+	store.mu.Unlock()
 }
 
 func TestEagerRefresh_DoesNotTriggerIfStoreNil(t *testing.T) {
 	c := cache.NewInMemory[merge.Value[string]](cache.WithSweepInterval[merge.Value[string]](10 * time.Millisecond))
-	
+
 	// No store provided
 	w := New[string](c, nil, nil, nil)
 
 	key := "er-key-3"
 	val := "val-no-store"
-	
+
 	// Manually set into cache as there is no store to fetch from
 	now := time.Now()
 	mv := merge.Value[string]{Data: val, Timestamp: now}
 	_ = c.Set(context.Background(), key, mv, 100*time.Millisecond)
 
-
-	w.Register(key, ModeStrongLocal, 100*time.Millisecond, 
+	w.Register(key, ModeStrongLocal, 100*time.Millisecond,
 		cache.WithEagerRefresh(0.1), // Refresh when 10% TTL (10ms) is remaining
 	)
 

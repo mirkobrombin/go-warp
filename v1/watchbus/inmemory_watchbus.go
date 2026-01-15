@@ -199,7 +199,6 @@ func (b *InMemoryWatchBus) Unwatch(ctx context.Context, key string, ch chan []by
 			subs[i] = subs[len(subs)-1]
 			subs = subs[:len(subs)-1]
 			b.subs[key] = subs
-			close(c)
 			removed = true
 			break
 		}
@@ -237,7 +236,6 @@ func (b *InMemoryWatchBus) Unwatch(ctx context.Context, key string, ch chan []by
 				subs[i] = subs[len(subs)-1]
 				subs = subs[:len(subs)-1]
 				node.subs = subs
-				close(c)
 				break
 			}
 		}
