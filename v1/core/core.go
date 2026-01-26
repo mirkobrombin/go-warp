@@ -414,15 +414,8 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		if isStale {
 			if w.store != nil {
 				// Try to refresh from source
-				vInterface, errS, _ := w.group.Do(key, func() (interface{}, error) {
-					// Apply SoftTimeout if configured
-					fetchCtx := ctx
-					if reg.ttlOpts.SoftTimeout > 0 {
-						var cancel context.CancelFunc
-						fetchCtx, cancel = context.WithTimeout(ctx, reg.ttlOpts.SoftTimeout)
-						defer cancel()
-					}
-
+				fetchCtx := context.WithoutCancel(ctx)
+				resCh := w.group.DoChan(key, func() (any, error) {
 					val, ok, err := w.store.Get(fetchCtx, key)
 					if err != nil {
 						return nil, err
@@ -430,53 +423,69 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 					if !ok {
 						return nil, ErrNotFound
 					}
-					now := time.Now()
-					return merge.Value[T]{Data: val, Timestamp: now}, nil
+					return merge.Value[T]{Data: val, Timestamp: time.Now()}, nil
 				})
 
-				if errS != nil {
-					// Source failed: return stale data if error is not NotFound
-					// This catches both store errors and SoftTimeout (DeadlineExceeded)
-					if !errors.Is(errS, ErrNotFound) {
-						// Log differently for timeout vs error
-						if errors.Is(errS, context.DeadlineExceeded) {
-							slog.Warn("warp: soft timeout activated", "key", key)
-						} else {
-							slog.Warn("warp: fail-safe activated", "key", key, "error", errS)
-						}
-
+				var res singleflight.Result
+				timeout := reg.ttlOpts.SoftTimeout
+				if timeout > 0 {
+					select {
+					case res = <-resCh:
+					case <-time.After(timeout):
+						slog.Warn("warp: soft timeout activated, returning stale", "key", key)
+						go func() {
+							r := <-resCh
+							if r.Err == nil {
+								mv := r.Val.(merge.Value[T])
+								ttl := currentTTL
+								if reg.ttlStrategy != nil {
+									ttl = reg.ttlStrategy.TTL(key)
+								}
+								effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+								_ = w.cache.Set(context.Background(), key, mv, effectiveTTL)
+							}
+						}()
 						if w.hitCounter != nil {
 							w.hitCounter.Inc()
 						}
 						return v.Data, nil
 					}
-					// If ErrNotFound, fall through to return error (do not return stale)
-					return v.Data, ErrNotFound
 				} else {
-					// Source success: update cache and return new
-					mv := vInterface.(merge.Value[T])
-
-					ttl := currentTTL
-					if reg.ttlStrategy != nil {
-						ttl = reg.ttlStrategy.TTL(key)
-					}
-
-					reg.mu.Lock()
-					reg.currentTTL = ttl
-					reg.lastAccess = mv.Timestamp
-					reg.mu.Unlock()
-
-					effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
-					_ = w.cache.Set(ctx, key, mv, effectiveTTL)
-
-					if w.hitCounter != nil {
-						w.hitCounter.Inc()
-					}
-					if w.traceEnabled {
-						span.SetAttributes(attribute.String("warp.core.result", "hit_refreshed"))
-					}
-					return mv.Data, nil
+					res = <-resCh
 				}
+
+				if res.Err != nil {
+					if !errors.Is(res.Err, ErrNotFound) {
+						slog.Warn("warp: fail-safe activated", "key", key, "error", res.Err)
+						if w.hitCounter != nil {
+							w.hitCounter.Inc()
+						}
+						return v.Data, nil
+					}
+					return v.Data, ErrNotFound
+				}
+
+				mv := res.Val.(merge.Value[T])
+				ttl := currentTTL
+				if reg.ttlStrategy != nil {
+					ttl = reg.ttlStrategy.TTL(key)
+				}
+
+				reg.mu.Lock()
+				reg.currentTTL = ttl
+				reg.lastAccess = mv.Timestamp
+				reg.mu.Unlock()
+
+				effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+				_ = w.cache.Set(ctx, key, mv, effectiveTTL)
+
+				if w.hitCounter != nil {
+					w.hitCounter.Inc()
+				}
+				if w.traceEnabled {
+					span.SetAttributes(attribute.String("warp.core.result", "hit_refreshed"))
+				}
+				return mv.Data, nil
 			}
 		}
 
@@ -524,7 +533,7 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 					refreshCtx := context.WithoutCancel(context.Background())
 
 					// The singleflight group handles deduplication of concurrent refresh attempts
-					vInterface, errS, _ := w.group.Do(key, func() (interface{}, error) {
+					vInterface, errS, _ := w.group.Do(key, func() (any, error) {
 						// SoftTimeout applies to eager refresh as well
 						fetchCtx := refreshCtx
 						if reg.ttlOpts.SoftTimeout > 0 {
@@ -591,7 +600,7 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 		}
 	}
 	if w.store != nil {
-		vInterface, errS, _ := w.group.Do(key, func() (interface{}, error) {
+		vInterface, errS, _ := w.group.Do(key, func() (any, error) {
 			val, ok, err := w.store.Get(ctx, key)
 			if err != nil {
 				return nil, err
@@ -688,20 +697,45 @@ func (w *Warp[T]) GetOrSet(ctx context.Context, key string, loader func(context.
 		}
 
 		if isStale {
-			// Fail-Safe Logic for GetOrSet
-			// We try to run the loader. If it fails, we return stale data.
-			vInterface, errS, _ := w.group.Do(key, func() (interface{}, error) {
+			resCh := w.group.DoChan(key, func() (any, error) {
 				val, err := loader(ctx)
 				if err != nil {
 					return nil, err
 				}
-				now := time.Now()
-				return merge.Value[T]{Data: val, Timestamp: now}, nil
+				return merge.Value[T]{Data: val, Timestamp: time.Now()}, nil
 			})
 
-			if errS != nil {
+			var res singleflight.Result
+			timeout := reg.ttlOpts.SoftTimeout
+			if timeout > 0 {
+				select {
+				case res = <-resCh:
+				case <-time.After(timeout):
+					slog.Warn("warp: soft timeout activated (GetOrSet), returning stale", "key", key)
+					go func() {
+						r := <-resCh
+						if r.Err == nil {
+							mv := r.Val.(merge.Value[T])
+							ttl := currentTTL
+							if reg.ttlStrategy != nil {
+								ttl = reg.ttlStrategy.TTL(key)
+							}
+							effectiveTTL := ttl + reg.ttlOpts.FailSafeGracePeriod
+							_ = w.cache.Set(context.Background(), key, mv, effectiveTTL)
+						}
+					}()
+					if w.hitCounter != nil {
+						w.hitCounter.Inc()
+					}
+					return v.Data, nil
+				}
+			} else {
+				res = <-resCh
+			}
+
+			if res.Err != nil {
 				// Loader failed.
-				slog.Warn("warp: fail-safe activated (GetOrSet)", "key", key, "error", errS)
+				slog.Warn("warp: fail-safe activated (GetOrSet)", "key", key, "error", res.Err)
 				if w.hitCounter != nil {
 					w.hitCounter.Inc()
 				}
@@ -709,7 +743,7 @@ func (w *Warp[T]) GetOrSet(ctx context.Context, key string, loader func(context.
 			}
 
 			// Loader success
-			mv := vInterface.(merge.Value[T])
+			mv := res.Val.(merge.Value[T])
 
 			ttl := currentTTL
 			if reg.ttlStrategy != nil {
@@ -774,7 +808,7 @@ func (w *Warp[T]) GetOrSet(ctx context.Context, key string, loader func(context.
 		span.SetAttributes(attribute.String("warp.core.result", "miss"))
 	}
 
-	vInterface, errS, _ := w.group.Do(key, func() (interface{}, error) {
+	vInterface, errS, _ := w.group.Do(key, func() (any, error) {
 		val, err := loader(ctx)
 		if err != nil {
 			return nil, err

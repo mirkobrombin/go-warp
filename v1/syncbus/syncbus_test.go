@@ -106,9 +106,19 @@ func TestContextBasedUnsubscribe(t *testing.T) {
 		t.Fatal("timeout waiting for unsubscribe")
 	}
 
-	bus.mu.Lock()
-	defer bus.mu.Unlock()
-	if _, ok := bus.subs["key"]; ok {
+	// Poll for cleanup
+	deadline := time.Now().Add(time.Second)
+	cleaned := false
+	for time.Now().Before(deadline) {
+		subs, _ := bus.subs.Get("key")
+		if len(subs) == 0 {
+			cleaned = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !cleaned {
 		t.Fatal("subscription still present after context cancel")
 	}
 }
@@ -121,9 +131,8 @@ func TestDeduplicatePendingKeys(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	bus.mu.Lock()
-	bus.pending["key"] = struct{}{}
-	bus.mu.Unlock()
+	// Manually set pending
+	bus.pending.Set("key", true)
 
 	if err := bus.Publish(context.Background(), "key"); err != nil {
 		t.Fatalf("publish: %v", err)
@@ -167,10 +176,12 @@ func TestSubscribeContextCanceled(t *testing.T) {
 	if _, err := bus.Subscribe(ctx, "key"); err == nil {
 		t.Fatal("expected subscribe error due to canceled context")
 	}
-	bus.mu.Lock()
-	defer bus.mu.Unlock()
-	if _, ok := bus.subs["key"]; ok {
-		t.Fatal("subscription should not be added when context is canceled")
+
+	if bus.subs.Has("key") {
+		subs, _ := bus.subs.Get("key")
+		if len(subs) > 0 {
+			t.Fatal("subscription should not be added when context is canceled")
+		}
 	}
 }
 
@@ -185,12 +196,22 @@ func TestUnsubscribeContextCanceled(t *testing.T) {
 	if err := bus.Unsubscribe(ctx, "key", ch); err == nil {
 		t.Fatal("expected unsubscribe error due to canceled context")
 	}
-	bus.mu.Lock()
-	if _, ok := bus.subs["key"]; !ok {
-		bus.mu.Unlock()
-		t.Fatal("subscription should remain when unsubscribe context is canceled")
+
+	if !bus.subs.Has("key") {
+		t.Fatal("subscription subscription should remain when unsubscribe context is canceled")
 	}
-	bus.mu.Unlock()
+	subs, _ := bus.subs.Get("key")
+	found := false
+	for _, c := range subs {
+		if c == ch {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("subscription channel missing")
+	}
+
 	if err := bus.Unsubscribe(context.Background(), "key", ch); err != nil {
 		t.Fatalf("cleanup unsubscribe: %v", err)
 	}
@@ -230,9 +251,9 @@ func TestSubscribeLeaseContextCanceled(t *testing.T) {
 	if _, err := bus.SubscribeLease(ctx, "id"); err == nil {
 		t.Fatal("expected subscribe lease error due to canceled context")
 	}
-	bus.mu.Lock()
-	defer bus.mu.Unlock()
-	if _, ok := bus.subs["lease:id"]; ok {
+
+	subs, _ := bus.subs.Get("lease:id")
+	if len(subs) > 0 {
 		t.Fatal("subscription should not be added when context is canceled")
 	}
 }
@@ -256,12 +277,10 @@ func TestUnsubscribeLeaseClosesChannel(t *testing.T) {
 		t.Fatal("timeout waiting for unsubscribe lease")
 	}
 
-	bus.mu.Lock()
-	if _, ok := bus.subs["lease:id"]; ok {
-		bus.mu.Unlock()
+	subs, _ := bus.subs.Get("lease:id")
+	if len(subs) > 0 {
 		t.Fatal("subscription still present after unsubscribe lease")
 	}
-	bus.mu.Unlock()
 
 	metrics := bus.Metrics()
 	if metrics.Published != 0 {
@@ -299,12 +318,12 @@ func TestUnsubscribeLeaseContextCanceled(t *testing.T) {
 	if err := bus.UnsubscribeLease(ctx, "id", ch); err == nil {
 		t.Fatal("expected unsubscribe lease error due to canceled context")
 	}
-	bus.mu.Lock()
-	if _, ok := bus.subs["lease:id"]; !ok {
-		bus.mu.Unlock()
+
+	subs, _ := bus.subs.Get("lease:id")
+	if len(subs) == 0 {
 		t.Fatal("subscription should remain when unsubscribe lease context is canceled")
 	}
-	bus.mu.Unlock()
+
 	if err := bus.UnsubscribeLease(context.Background(), "id", ch); err != nil {
 		t.Fatalf("cleanup unsubscribe lease: %v", err)
 	}

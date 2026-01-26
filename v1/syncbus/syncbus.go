@@ -3,10 +3,9 @@ package syncbus
 import (
 	"context"
 	"errors"
-	"math/rand"
-	"sync"
 	"sync/atomic"
-	"time"
+
+	"github.com/mirkobrombin/go-foundation/pkg/safemap"
 )
 
 var (
@@ -73,16 +72,18 @@ type Bus interface {
 
 // InMemoryBus is a local implementation of Bus mainly for testing.
 type InMemoryBus struct {
-	mu        sync.Mutex
-	subs      map[string][]chan Event
-	pending   map[string]struct{}
+	subs      *safemap.ShardedMap[string, []chan Event]
+	pending   *safemap.ShardedMap[string, bool]
 	published atomic.Uint64
 	delivered atomic.Uint64
 }
 
 // NewInMemoryBus returns a new InMemoryBus.
 func NewInMemoryBus() *InMemoryBus {
-	return &InMemoryBus{subs: make(map[string][]chan Event), pending: make(map[string]struct{})}
+	return &InMemoryBus{
+		subs:    safemap.NewSharded[string, []chan Event](safemap.StringHasher, 32),
+		pending: safemap.NewSharded[string, bool](safemap.StringHasher, 32),
+	}
 }
 
 // IsHealthy implements Bus.IsHealthy.
@@ -108,25 +109,21 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string, opts ...PublishOp
 		opt(&options)
 	}
 
-	b.mu.Lock()
-	if _, ok := b.pending[key]; ok {
-		b.mu.Unlock()
-		return nil // deduplicate
-	}
-	b.pending[key] = struct{}{}
-	chans := append([]chan Event(nil), b.subs[key]...)
-	b.mu.Unlock()
+	// Check and Set Pending (Deduplication)
+	var alreadyPending bool
+	b.pending.Compute(key, func(v bool, exists bool) bool {
+		alreadyPending = exists
+		return true
+	})
 
-	// random small delay to reduce publish bursts
-	if j := rand.Int63n(int64(10 * time.Millisecond)); j > 0 {
-		select {
-		case <-ctx.Done():
-			b.mu.Lock()
-			delete(b.pending, key)
-			b.mu.Unlock()
-			return ctx.Err()
-		case <-time.After(time.Duration(j)):
-		}
+	if alreadyPending {
+		return nil
+	}
+	defer b.pending.Delete(key)
+
+	chans, _ := b.subs.Get(key)
+	if len(chans) == 0 {
+		return nil
 	}
 
 	evt := Event{
@@ -139,22 +136,13 @@ func (b *InMemoryBus) Publish(ctx context.Context, key string, opts ...PublishOp
 	for _, ch := range chans {
 		select {
 		case <-ctx.Done():
-			b.mu.Lock()
-			delete(b.pending, key)
-			b.mu.Unlock()
 			return ctx.Err()
-		default:
-		}
-		select {
 		case ch <- evt:
 			b.delivered.Add(1)
 		default:
 		}
 	}
 
-	b.mu.Lock()
-	delete(b.pending, key)
-	b.mu.Unlock()
 	return nil
 }
 
@@ -180,28 +168,20 @@ func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas 
 		opt(&options)
 	}
 
-	b.mu.Lock()
-	if _, ok := b.pending[key]; ok {
-		b.mu.Unlock()
+	var alreadyPending bool
+	b.pending.Compute(key, func(v bool, exists bool) bool {
+		alreadyPending = exists
+		return true
+	})
+
+	if alreadyPending {
 		return nil
 	}
-	chans := append([]chan Event(nil), b.subs[key]...)
-	if len(chans) < replicas {
-		b.mu.Unlock()
-		return ErrQuorumNotSatisfied
-	}
-	b.pending[key] = struct{}{}
-	b.mu.Unlock()
+	defer b.pending.Delete(key)
 
-	if j := rand.Int63n(int64(10 * time.Millisecond)); j > 0 {
-		select {
-		case <-ctx.Done():
-			b.mu.Lock()
-			delete(b.pending, key)
-			b.mu.Unlock()
-			return ctx.Err()
-		case <-time.After(time.Duration(j)):
-		}
+	chans, _ := b.subs.Get(key)
+	if len(chans) < replicas {
+		return ErrQuorumNotSatisfied
 	}
 
 	evt := Event{
@@ -214,23 +194,13 @@ func (b *InMemoryBus) PublishAndAwait(ctx context.Context, key string, replicas 
 	for _, ch := range chans {
 		select {
 		case <-ctx.Done():
-			b.mu.Lock()
-			delete(b.pending, key)
-			b.mu.Unlock()
 			return ctx.Err()
-		default:
-		}
-		select {
 		case ch <- evt:
 			b.delivered.Add(1)
 			delivered++
 		default:
 		}
 	}
-
-	b.mu.Lock()
-	delete(b.pending, key)
-	b.mu.Unlock()
 
 	if delivered < replicas {
 		return ErrQuorumNotSatisfied
@@ -247,10 +217,11 @@ func (b *InMemoryBus) Subscribe(ctx context.Context, key string) (<-chan Event, 
 	default:
 	}
 
-	ch := make(chan Event, 1)
-	b.mu.Lock()
-	b.subs[key] = append(b.subs[key], ch)
-	b.mu.Unlock()
+	ch := make(chan Event, 1) // Buffer 1
+	b.subs.Compute(key, func(v []chan Event, exists bool) []chan Event {
+		return append(v, ch)
+	})
+
 	go func() {
 		<-ctx.Done()
 		_ = b.Unsubscribe(context.Background(), key, ch)
@@ -266,21 +237,25 @@ func (b *InMemoryBus) Unsubscribe(ctx context.Context, key string, ch <-chan Eve
 	default:
 	}
 
-	b.mu.Lock()
-	subs := b.subs[key]
-	for i, c := range subs {
-		if c == ch {
-			subs[i] = subs[len(subs)-1]
-			subs = subs[:len(subs)-1]
-			b.subs[key] = subs
-			close(c)
-			break
+	b.subs.Compute(key, func(subs []chan Event, exists bool) []chan Event {
+		if !exists {
+			return nil
 		}
-	}
-	if len(subs) == 0 {
-		delete(b.subs, key)
-	}
-	b.mu.Unlock()
+		for i, c := range subs {
+			if c == ch {
+				// Remove (swap with last)
+				subs[i] = subs[len(subs)-1]
+				subs = subs[:len(subs)-1]
+				close(c)
+				break
+			}
+		}
+		if len(subs) == 0 {
+			return subs
+		}
+		return subs
+	})
+
 	return nil
 }
 

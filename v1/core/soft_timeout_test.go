@@ -47,13 +47,13 @@ func (m *MockStoreSlow[T]) Keys(ctx context.Context) ([]string, error) {
 func TestSoftTimeout(t *testing.T) {
 	// Setup
 	c := cache.NewInMemory[merge.Value[string]](cache.WithSweepInterval[merge.Value[string]](10 * time.Millisecond))
-	
+
 	// Store takes 200ms to respond
 	store := &MockStoreSlow[string]{
 		data:  make(map[string]string),
 		delay: 200 * time.Millisecond,
 	}
-	
+
 	w := New[string](c, store, nil, nil)
 
 	key := "slow-key"
@@ -61,10 +61,10 @@ func TestSoftTimeout(t *testing.T) {
 	store.data[key] = val
 
 	// Register with:
-	// TTL: 20ms (Short, so it expires quickly)
+	// TTL: 1s (Longer TTL for refresh verification)
 	// FailSafe: 1h (So we have a stale backup)
 	// SoftTimeout: 50ms (Much shorter than store delay)
-	w.Register(key, ModeStrongLocal, 20*time.Millisecond, 
+	w.Register(key, ModeStrongLocal, 1*time.Second,
 		cache.WithFailSafe(1*time.Hour),
 		cache.WithSoftTimeout(50*time.Millisecond),
 	)
@@ -73,7 +73,7 @@ func TestSoftTimeout(t *testing.T) {
 	start := time.Now()
 	got, err := w.Get(context.Background(), key)
 	elapsed := time.Since(start)
-	
+
 	if err != nil {
 		t.Fatalf("Initial Get failed: %v", err)
 	}
@@ -84,8 +84,8 @@ func TestSoftTimeout(t *testing.T) {
 		t.Errorf("Initial Get was too fast (%v), expected > 200ms", elapsed)
 	}
 
-	// 2. Wait for TTL to expire (20ms)
-	time.Sleep(50 * time.Millisecond)
+	// 2. Wait for TTL to expire (1s + buffer)
+	time.Sleep(1100 * time.Millisecond)
 
 	// 3. Get Again (Stale exists + Store is slow)
 	// Should hit SoftTimeout at 50ms and return stale data immediately
@@ -99,9 +99,27 @@ func TestSoftTimeout(t *testing.T) {
 	if got != val {
 		t.Errorf("Soft Timeout Get = %v, want %v", got, val)
 	}
-	
+
 	// Check timing: Should be around 50ms (SoftTimeout), definitely NOT 200ms
 	if elapsed > 150*time.Millisecond {
 		t.Errorf("Soft Timeout Get took too long (%v), expected ~50ms", elapsed)
+	}
+
+	// 4. Wait for background refresh to finish (remaining 150ms of 200ms delay + buffer)
+	time.Sleep(250 * time.Millisecond)
+
+	// 5. Get Again - Should be a fresh Hit now (0ms latency from cache)
+	start = time.Now()
+	got, err = w.Get(context.Background(), key)
+	elapsed = time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Third Get failed: %v", err)
+	}
+	if got != val {
+		t.Errorf("Third Get = %v, want %v", got, val)
+	}
+	if elapsed > 10*time.Millisecond {
+		t.Errorf("Third Get was slow (%v), background refresh likely failed", elapsed)
 	}
 }

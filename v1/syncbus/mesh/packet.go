@@ -20,7 +20,7 @@ var (
 
 var (
 	bufferPool = sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			return make([]byte, 2048)
 		},
 	}
@@ -111,7 +111,7 @@ func (p *packet) unmarshal(b []byte) error {
 		count := int(binary.BigEndian.Uint16(b[18:20]))
 		p.Keys = make([]string, 0, count)
 		curr := 20
-		for i := 0; i < count; i++ {
+		for range count {
 			if len(b) < curr+2 {
 				return errShortBuffer
 			}

@@ -13,7 +13,7 @@ func TestEngineConcurrentAccess(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			e.Register("key", func(old, new int) (int, error) {
 				return new, nil
 			})
@@ -22,7 +22,7 @@ func TestEngineConcurrentAccess(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			_, err := e.Merge("key", Value[int]{Data: i, Timestamp: time.Now()}, Value[int]{Data: i + 1, Timestamp: time.Now()})
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
