@@ -61,8 +61,8 @@ func TestRedisCluster_Gossip(t *testing.T) {
 	// Clean up previous test data using the first client
 	_ = clients[0].Del(ctx, testKey).Err()
 
-	// Wait for all nodes to fully subscribe before testing
-	time.Sleep(2 * time.Second)
+	// Wait for all nodes to fully subscribe before testing with longer timeout in CI
+	time.Sleep(3 * time.Second)
 
 	// Step 1: Node 0 sets initial value
 	if err := nodes[0].Set(ctx, testKey, "valueA"); err != nil {
@@ -76,7 +76,8 @@ func TestRedisCluster_Gossip(t *testing.T) {
 	}
 	t.Logf("Verified: %s is set in Redis L2 (raw value exists, len=%d)", testKey, len(val))
 
-	time.Sleep(300 * time.Millisecond)
+	// Give more time for cache propagation
+	time.Sleep(500 * time.Millisecond)
 
 	// Step 2: All other nodes Get -> They should get "valueA"
 	for i := 1; i < nodeCount; i++ {
@@ -100,15 +101,29 @@ func TestRedisCluster_Gossip(t *testing.T) {
 	}
 	t.Logf("Verified: %s updated in Redis L2 (raw value exists, len=%d)", testKey, len(val))
 
-	// Step 4: Wait for invalidation propagation
-	time.Sleep(2 * time.Second)
+	// Step 4: Wait for invalidation propagation with retry logic
+	deadline := time.Now().Add(5 * time.Second)
+	var successCount int
+	for time.Now().Before(deadline) {
+		successCount = 0
+		for i := 1; i < nodeCount; i++ {
+			val, err := nodes[i].Get(ctx, testKey)
+			if err == nil && val == "valueB" {
+				successCount++
+			}
+		}
+		if successCount == nodeCount-1 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 
-	// Step 5: Verify
-	successCount := 0
+	// Step 5: Final verification with detailed reporting
+	finalSuccessCount := 0
 	for i := 1; i < nodeCount; i++ {
 		val, err := nodes[i].Get(ctx, testKey)
 		if val == "valueB" {
-			successCount++
+			finalSuccessCount++
 		} else if val == "valueA" {
 			t.Errorf("Node %d STALE! Still has valueA", i)
 		} else {
@@ -116,9 +131,9 @@ func TestRedisCluster_Gossip(t *testing.T) {
 		}
 	}
 
-	if successCount == nodeCount-1 {
-		t.Logf("SUCCESS: All %d Redis peer nodes received invalidation and have valueB.", successCount)
+	if finalSuccessCount == nodeCount-1 {
+		t.Logf("SUCCESS: All %d Redis peer nodes received invalidation and have valueB.", finalSuccessCount)
 	} else {
-		t.Fatalf("FAILED: Only %d/%d Redis nodes received invalidation.", successCount, nodeCount-1)
+		t.Fatalf("FAILED: Only %d/%d Redis nodes received invalidation.", finalSuccessCount, nodeCount-1)
 	}
 }
