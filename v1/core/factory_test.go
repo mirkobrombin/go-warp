@@ -152,3 +152,47 @@ func TestGetOrSet_LoaderError(t *testing.T) {
 		t.Errorf("Expected 'boom' error, got: %v", err)
 	}
 }
+
+func TestGetOrSet_AutoRegister(t *testing.T) {
+	c := cache.NewInMemory[merge.Value[string]](cache.WithSweepInterval[merge.Value[string]](10 * time.Millisecond))
+	w := New[string](c, nil, nil, nil)
+
+	// Don't register the key - let GetOrSet auto-register it
+	loader := func(ctx context.Context) (string, error) {
+		return "auto-registered-val", nil
+	}
+
+	val, err := w.GetOrSet(context.Background(), "auto-key", loader)
+	if err != nil {
+		t.Fatalf("Expected success with auto-registration, got: %v", err)
+	}
+	if val != "auto-registered-val" {
+		t.Errorf("Expected 'auto-registered-val', got '%v'", val)
+	}
+
+	// Verify it's now in cache and can be retrieved
+	cached, err := w.Get(context.Background(), "auto-key")
+	if err != nil {
+		t.Fatalf("Expected to retrieve auto-registered value, got error: %v", err)
+	}
+	if cached != "auto-registered-val" {
+		t.Errorf("Expected 'auto-registered-val', got '%v'", cached)
+	}
+
+	// Verify the registration exists with default values
+	shard := w.shard("auto-key")
+	shard.RLock()
+	reg, ok := shard.regs["auto-key"]
+	shard.RUnlock()
+
+	if !ok {
+		t.Fatal("Expected key to be registered after GetOrSet")
+	}
+	if reg.mode != ModeStrongLocal {
+		t.Errorf("Expected ModeStrongLocal, got %v", reg.mode)
+	}
+	if reg.ttl != 5*time.Minute {
+		t.Errorf("Expected 5m TTL, got %v", reg.ttl)
+	}
+}
+

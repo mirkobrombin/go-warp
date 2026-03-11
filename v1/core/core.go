@@ -638,7 +638,7 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error) {
 
 // GetOrSet retrieves a value from the cache. If the key is not found, it executes the provided loader function,
 // stores the result in the cache, and returns it. Concurrent calls for the same key are deduplicated (singleflight).
-// The key must be registered beforehand to determine TTL and consistency mode.
+// If the key is not registered, it will be automatically registered with default settings (ModeStrongLocal, 5 minute TTL).
 func (w *Warp[T]) GetOrSet(ctx context.Context, key string, loader func(context.Context) (T, error)) (T, error) {
 	if w.hitCounter != nil {
 		metrics.GetCounter.Inc()
@@ -671,8 +671,19 @@ func (w *Warp[T]) GetOrSet(ctx context.Context, key string, loader func(context.
 	reg, ok := shard.regs[key]
 	shard.RUnlock()
 	if !ok {
-		var zero T
-		return zero, ErrUnregistered
+		// Auto-register with sensible defaults: ModeStrongLocal and 5 minute TTL
+		shard.Lock()
+		// Double-check after acquiring write lock (another goroutine might have registered it)
+		if _, exists := shard.regs[key]; !exists {
+			shard.regs[key] = &registration{
+				ttl:        5 * time.Minute,
+				mode:       ModeStrongLocal,
+				currentTTL: 5 * time.Minute,
+				quorum:     1,
+			}
+		}
+		reg = shard.regs[key]
+		shard.Unlock()
 	}
 	if reg.ttlStrategy != nil {
 		reg.ttlStrategy.Record(key)

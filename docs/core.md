@@ -77,7 +77,9 @@ func (w *Warp[T]) Get(ctx context.Context, key string) (T, error)
 
 ### `GetOrSet`
 
-Retrieves a value from the cache. If the key is not found, it executes the provided loader function, stores the result in the cache, and returns it. Concurrent calls for the same key are deduplicated (singleflight). The key must be registered beforehand.
+Retrieves a value from the cache. If the key is not found, it executes the provided loader function, stores the result in the cache, and returns it. Concurrent calls for the same key are deduplicated (singleflight). 
+
+If the key is not registered, it will be automatically registered with sensible defaults (`ModeStrongLocal` consistency mode and 5 minute TTL). For fine-grained control over consistency mode and TTL, explicitly register the key using `Register()` or `RegisterDynamicTTL()` before calling `GetOrSet()`.
 
 ```go
 func (w *Warp[T]) GetOrSet(ctx context.Context, key string, loader func(context.Context) (T, error)) (T, error)
