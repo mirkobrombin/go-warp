@@ -18,6 +18,20 @@ func NewRedis(client *redis.Client, bus syncbus.Bus) *Redis
 ```
 Creates a new Redis-backed locker.
 
+### `NewNATS`
+
+```go
+func NewNATS(js jetstream.JetStream, bucket string) *NATS
+```
+Creates a new NATS JetStream-backed distributed locker. `bucket` is the JetStream
+KV bucket name; it is created automatically if absent. No Redis required.
+
+```go
+nc, _ := nats.Connect(nats.DefaultURL)
+js, _ := jetstream.New(nc)
+locker := lock.NewNATS(js, "my-locks")
+```
+
 ### `Locker` Interface
 
 ```go

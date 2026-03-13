@@ -75,3 +75,36 @@ Creates a fully isolated Warp instance with **no external dependencies**. Useful
 ```go
 w := presets.NewInMemoryStandalone[Session]()
 ```
+
+### `NewNATSEventual`
+
+Creates a Warp instance using **NATS Core** as the synchronization bus. L2 is in-memory per node, making this preset suitable when NATS is already present in the infrastructure but a shared persistent store is not required.
+
+- **Architecture**:
+    - **L1**: In-Memory Cache.
+    - **L2**: In-Memory Store (per node).
+    - **Bus**: NATS Core Pub/Sub.
+    - **Consistency**: Eventual.
+
+```go
+nc, _ := nats.Connect(nats.DefaultURL)
+w := presets.NewNATSEventual[MyData](presets.NATSOptions{Conn: nc})
+```
+
+### `NewNATSStrong`
+
+Expresses user intent for **strong consistency** with NATS Core as the bus. The underlying configuration is identical to `NewNATSEventual` — NATS Core does not support topology-aware quorum. Full quorum across nodes requires NATS JetStream (future work).
+
+- **Architecture**:
+    - **L1**: In-Memory Cache.
+    - **L2**: In-Memory Store (per node).
+    - **Bus**: NATS Core Pub/Sub.
+    - **Consistency**: Eventual (strong is a usage hint).
+
+```go
+nc, _ := nats.Connect(nats.DefaultURL)
+w := presets.NewNATSStrong[Config](presets.NATSOptions{Conn: nc})
+```
+
+> [!NOTE]
+> Full quorum-based strong consistency with NATS requires JetStream and is planned for a future preset.

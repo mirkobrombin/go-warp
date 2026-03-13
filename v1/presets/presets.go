@@ -7,7 +7,9 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
 	"github.com/mirkobrombin/go-warp/v1/syncbus/mesh"
+	busnats "github.com/mirkobrombin/go-warp/v1/syncbus/nats"
 	busredis "github.com/mirkobrombin/go-warp/v1/syncbus/redis"
+	nats "github.com/nats-io/nats.go"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -72,4 +74,30 @@ func NewInMemoryStandalone[T any]() *core.Warp[T] {
 	b := syncbus.NewInMemoryBus()
 	engine := merge.NewEngine[T]()
 	return core.New[T](c, s, b, engine)
+}
+
+// NATSOptions configures a connection to a NATS server.
+type NATSOptions struct {
+	Conn *nats.Conn
+}
+
+// NewNATSEventual creates a Warp instance configured for eventual consistency
+// using NATS Core as the synchronization bus. L2 is in-memory per node, making
+// this preset suitable when NATS is already present in the infrastructure but
+// a shared persistent store is not required.
+func NewNATSEventual[T any](opts NATSOptions) *core.Warp[T] {
+	c := cache.NewInMemory[merge.Value[T]]()
+	s := adapter.NewInMemoryStore[T]()
+	bus := busnats.NewNATSBus(opts.Conn)
+	engine := merge.NewEngine[T]()
+	return core.New[T](c, s, bus, engine)
+}
+
+// NewNATSStrong creates a Warp instance with NATS Core as the synchronization bus.
+// This preset expresses user intent for strong consistency; however, NATS Core does
+// not support topology-aware quorum — full quorum across nodes requires NATS JetStream
+// (future work). The underlying configuration is identical to NewNATSEventual and
+// eventual consistency is used as a safe default.
+func NewNATSStrong[T any](opts NATSOptions) *core.Warp[T] {
+	return NewNATSEventual[T](opts)
 }
