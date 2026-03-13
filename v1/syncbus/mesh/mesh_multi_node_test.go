@@ -11,6 +11,7 @@ import (
 )
 
 func TestMeshMultiNode(t *testing.T) {
+	requireMulticast(t)
 	const nodeCount = 10
 	portBase := 10000 + (int(time.Now().Unix()) % 5000)
 

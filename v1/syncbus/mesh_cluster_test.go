@@ -3,6 +3,7 @@ package syncbus_test
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -12,9 +13,26 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/core"
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus/mesh"
+	"golang.org/x/net/ipv4"
 )
 
+// requireMulticast skips the test if the host cannot join a multicast group.
+func requireMulticast(t *testing.T) {
+	t.Helper()
+	addr, _ := net.ResolveUDPAddr("udp4", "239.0.0.1:0")
+	c, err := net.ListenPacket("udp4", "0.0.0.0:0")
+	if err != nil {
+		t.Skipf("requires multicast: cannot open UDP socket: %v", err)
+	}
+	defer c.Close()
+	pc := ipv4.NewPacketConn(c)
+	if err := pc.JoinGroup(nil, addr); err != nil {
+		t.Skipf("requires a functional multicast environment: %v", err)
+	}
+}
+
 func TestMeshCluster_Gossip(t *testing.T) {
+	requireMulticast(t)
 	nodeCount := 10
 	basePort := 8100 // Use different port range to avoid conflicts
 	nodes := make([]*core.Warp[string], nodeCount)
