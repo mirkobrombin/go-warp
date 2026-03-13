@@ -22,6 +22,19 @@ import (
 	busredis "github.com/mirkobrombin/go-warp/v1/syncbus/redis"
 )
 
+// eventually polls fn every 10ms until it returns true or the 2s deadline expires.
+func eventually(t *testing.T, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not met within 2s")
+}
+
 type fakeQuorumBus struct {
 	ackCh  chan struct{}
 	err    error
@@ -160,11 +173,15 @@ func TestDistributedInvalidation(t *testing.T) {
 	if err := w1.Set(ctx, "counter", 2); err != nil {
 		t.Fatalf("set2: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	v, err := w2.Get(ctx, "counter")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
+	var v int
+	eventually(t, func() bool {
+		var e error
+		v, e = w2.Get(ctx, "counter")
+		if e != nil {
+			t.Fatalf("get: %v", e)
+		}
+		return v == 3
+	})
 	if v != 3 {
 		t.Fatalf("expected 3 got %d", v)
 	}
@@ -185,7 +202,6 @@ func TestDistributedInvalidation(t *testing.T) {
 	}()
 	close(start)
 	wg.Wait()
-	time.Sleep(50 * time.Millisecond)
 	after := bus.Metrics()
 	// Deduplication is best-effort. If concurrent invalidations overlap, we expect 1 publish.
 	// If they happen sequentially (due to scheduler/networking), we expect 2. Both are valid.
@@ -193,6 +209,10 @@ func TestDistributedInvalidation(t *testing.T) {
 		t.Fatalf("expected 1 or 2 publishes, got %d", diff)
 	}
 
+	eventually(t, func() bool {
+		ev := testutil.ToFloat64(w1.evictionCounter) + testutil.ToFloat64(w2.evictionCounter)
+		return ev == 2
+	})
 	ev := testutil.ToFloat64(w1.evictionCounter) + testutil.ToFloat64(w2.evictionCounter)
 	if ev != 2 {
 		t.Fatalf("expected 2 evictions got %v", ev)
@@ -241,15 +261,21 @@ func TestWarpDistributedNATS(t *testing.T) {
 	if err := w1.Set(ctx, "counter", 2); err != nil {
 		t.Fatalf("set2: %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	v, err := w2.Get(ctx, "counter")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
+	var v int
+	eventually(t, func() bool {
+		var e error
+		v, e = w2.Get(ctx, "counter")
+		if e != nil {
+			t.Fatalf("get: %v", e)
+		}
+		return v == 3
+	})
 	if v != 3 {
 		t.Fatalf("expected 3 got %d", v)
 	}
 
+	// Let NATS dedup window (time.AfterFunc 1ms) expire before measuring.
+	time.Sleep(20 * time.Millisecond)
 	before := bus.Metrics()
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -266,12 +292,15 @@ func TestWarpDistributedNATS(t *testing.T) {
 	}()
 	close(start)
 	wg.Wait()
-	time.Sleep(50 * time.Millisecond)
 	after := bus.Metrics()
 	if after.Published-before.Published != 1 {
 		t.Fatalf("expected 1 publish, got %d", after.Published-before.Published)
 	}
 
+	eventually(t, func() bool {
+		ev := testutil.ToFloat64(w1.evictionCounter) + testutil.ToFloat64(w2.evictionCounter)
+		return ev == 2
+	})
 	ev := testutil.ToFloat64(w1.evictionCounter) + testutil.ToFloat64(w2.evictionCounter)
 	if ev != 2 {
 		t.Fatalf("expected 2 evictions got %v", ev)
