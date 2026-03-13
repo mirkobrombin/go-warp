@@ -32,7 +32,7 @@ func TestResiliency_GetSupressesError(t *testing.T) {
 	failingCache := &MockCacheFailing[merge.Value[string]]{
 		err: errors.New("redis down"),
 	}
-	
+
 	store := &MockStoreFS[string]{
 		data: map[string]string{
 			"res-key": "db-value",

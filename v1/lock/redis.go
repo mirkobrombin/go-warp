@@ -18,8 +18,8 @@ end
 return 0
 `)
 
-// lockEntry tracks the ownership token and optional TTL timer for a held lock.
-type lockEntry struct {
+// redisLockEntry tracks the ownership token and optional TTL timer for a held lock.
+type redisLockEntry struct {
 	token string
 	timer *time.Timer
 }
@@ -33,7 +33,7 @@ type Redis struct {
 	client redis.UniversalClient
 
 	mu      sync.Mutex
-	entries map[string]*lockEntry
+	entries map[string]*redisLockEntry
 }
 
 // NewRedis returns a new Redis locker backed by client.
@@ -41,7 +41,7 @@ type Redis struct {
 func NewRedis(client redis.UniversalClient) *Redis {
 	return &Redis{
 		client:  client,
-		entries: make(map[string]*lockEntry),
+		entries: make(map[string]*redisLockEntry),
 	}
 }
 
@@ -57,7 +57,7 @@ func (r *Redis) TryLock(ctx context.Context, key string, ttl time.Duration) (boo
 	if !ok {
 		return false, nil
 	}
-	entry := &lockEntry{token: token}
+	entry := &redisLockEntry{token: token}
 	if ttl > 0 {
 		// Capture token by value so the closure always releases the right lock,
 		// even if the entry is replaced by a concurrent re-acquisition.
@@ -111,13 +111,25 @@ func (r *Redis) cleanupLocal(key, token string) {
 }
 
 // Acquire blocks until the lock for key is obtained or ctx is cancelled.
-// It subscribes to keyspace notifications (__keyevent@0__:del and :expired) for
-// prompt wake-up; if the server does not publish those events the select falls
-// through on a timer and retries with exponential back-off (5 ms → 500 ms).
+// It subscribes once to keyspace notifications (__keyevent@0__:del and :expired)
+// before the retry loop so that a Release firing between a failed TryLock and
+// the wait cannot be missed. When the server does not publish those events the
+// select falls through on a timer and retries with exponential back-off
+// (5 ms → 500 ms).
 func (r *Redis) Acquire(ctx context.Context, key string, ttl time.Duration) error {
 	const baseInterval = 5 * time.Millisecond
 	const maxInterval = 500 * time.Millisecond
 	interval := baseInterval
+
+	// Subscribe ONCE before the retry loop — a single subscription avoids the
+	// overhead of re-subscribing on every failed TryLock and prevents missing
+	// release notifications that arrive between TryLock and the wait.
+	pubsub := r.client.Subscribe(ctx,
+		"__keyevent@0__:del",
+		"__keyevent@0__:expired",
+	)
+	defer pubsub.Close()
+	msgCh := pubsub.Channel()
 
 	for {
 		ok, err := r.TryLock(ctx, key, ttl)
@@ -128,15 +140,10 @@ func (r *Redis) Acquire(ctx context.Context, key string, ttl time.Duration) erro
 			return nil
 		}
 
-		pubsub := r.client.Subscribe(ctx,
-			"__keyevent@0__:del",
-			"__keyevent@0__:expired",
-		)
-		msgCh := pubsub.Channel()
-
 		timer := time.NewTimer(interval)
 		select {
 		case <-msgCh:
+			timer.Stop()
 			interval = baseInterval // reset after a real wake-up
 		case <-timer.C:
 			if interval < maxInterval {
@@ -144,10 +151,7 @@ func (r *Redis) Acquire(ctx context.Context, key string, ttl time.Duration) erro
 			}
 		case <-ctx.Done():
 			timer.Stop()
-			_ = pubsub.Close()
 			return ctx.Err()
 		}
-		timer.Stop()
-		_ = pubsub.Close()
 	}
 }

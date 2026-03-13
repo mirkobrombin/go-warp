@@ -195,4 +195,3 @@ func TestGetOrSet_AutoRegister(t *testing.T) {
 		t.Errorf("Expected 5m TTL, got %v", reg.ttl)
 	}
 }
-

@@ -84,6 +84,8 @@ func TestRelease_ownershipCheck(t *testing.T) {
 
 // TestAcquire_waits verifies that Acquire blocks while the lock is held and
 // returns promptly after the holder calls Release.
+// miniredis does not publish keyspace notifications, so this test exercises
+// the polling fallback path only.
 func TestAcquire_waits(t *testing.T) {
 	l, _, cleanup := newTestRedisLocker(t)
 	defer cleanup()
