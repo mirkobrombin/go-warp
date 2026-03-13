@@ -10,13 +10,18 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+type lockEntry struct {
+	token string
+	timer *time.Timer
+}
+
 // NATS implements Locker using NATS JetStream Key-Value as the coordination
 // backend. This provides distributed locks without requiring Redis.
 type NATS struct {
 	js     jetstream.JetStream
 	bucket string
 	mu     sync.Mutex
-	tokens map[string]string
+	locks  map[string]*lockEntry
 }
 
 // NewNATS returns a NATS JetStream-backed distributed locker.
@@ -25,7 +30,7 @@ func NewNATS(js jetstream.JetStream, bucket string) *NATS {
 	return &NATS{
 		js:     js,
 		bucket: bucket,
-		tokens: make(map[string]string),
+		locks:  make(map[string]*lockEntry),
 	}
 }
 
@@ -59,14 +64,17 @@ func (n *NATS) TryLock(ctx context.Context, key string, ttl time.Duration) (bool
 		}
 		return false, err
 	}
-	n.mu.Lock()
-	n.tokens[key] = token
-	n.mu.Unlock()
+	entry := &lockEntry{token: token}
 	if ttl > 0 {
-		time.AfterFunc(ttl, func() {
-			_ = n.Release(context.Background(), key)
+		// Bind the timer to this specific token so a re-acquired lock held
+		// by another caller cannot be released when this timer fires.
+		entry.timer = time.AfterFunc(ttl, func() {
+			_ = n.releaseWithToken(context.Background(), key, token)
 		})
 	}
+	n.mu.Lock()
+	n.locks[key] = entry
+	n.mu.Unlock()
 	return true, nil
 }
 
@@ -111,23 +119,58 @@ func (n *NATS) Acquire(ctx context.Context, key string, ttl time.Duration) error
 	}
 }
 
-// Release frees the lock for the given key.
+// Release frees the lock for the given key if this instance still holds it.
 func (n *NATS) Release(ctx context.Context, key string) error {
 	n.mu.Lock()
-	_, ok := n.tokens[key]
+	entry, ok := n.locks[key]
 	n.mu.Unlock()
 	if !ok {
 		return nil
 	}
+	return n.releaseWithToken(ctx, key, entry.token)
+}
+
+// releaseWithToken deletes the lock only when the KV store still holds the
+// expected token, using an optimistic last-revision check to prevent stealing
+// a lock re-acquired by another caller after expiry or a network partition.
+func (n *NATS) releaseWithToken(ctx context.Context, key, token string) error {
 	kv, err := n.getKV(ctx)
 	if err != nil {
 		return err
 	}
-	if err := kv.Delete(ctx, key); err != nil {
+	current, err := kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			n.cleanupLocal(key, token)
+			return nil
+		}
 		return err
 	}
-	n.mu.Lock()
-	delete(n.tokens, key)
-	n.mu.Unlock()
+	if string(current.Value()) != token {
+		// Another caller holds the lock; do not delete.
+		return nil
+	}
+	// Atomic ownership-checked delete: fails if entry was modified between
+	// our Get and this Delete (JSErrCodeStreamWrongLastSequence).
+	if err := kv.Delete(ctx, key, jetstream.LastRevision(current.Revision())); err != nil {
+		var apiErr *jetstream.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
+			// Lost a race — entry changed concurrently; our lock is already gone.
+			return nil
+		}
+		return err
+	}
+	n.cleanupLocal(key, token)
 	return nil
+}
+
+func (n *NATS) cleanupLocal(key, token string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if e, ok := n.locks[key]; ok && e.token == token {
+		if e.timer != nil {
+			e.timer.Stop()
+		}
+		delete(n.locks, key)
+	}
 }
