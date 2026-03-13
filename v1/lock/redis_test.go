@@ -7,90 +7,137 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
-
-	"github.com/mirkobrombin/go-warp/v1/syncbus"
 )
 
-func newRedisLocker(t *testing.T) (*Redis, syncbus.Bus, context.Context, func()) {
+func newTestRedisLocker(t *testing.T) (*Redis, *miniredis.Miniredis, func()) {
 	t.Helper()
 	mr, err := miniredis.Run()
 	if err != nil {
-		t.Fatalf("miniredis run: %v", err)
+		t.Fatalf("miniredis.Run: %v", err)
 	}
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	bus := syncbus.NewInMemoryBus()
-	locker := NewRedis(client, bus)
-	ctx := context.Background()
-	cleanup := func() {
+	locker := NewRedis(client)
+	return locker, mr, func() {
 		_ = client.Close()
 		mr.Close()
 	}
-	return locker, bus, ctx, cleanup
 }
 
-func TestRedisTryLockAcquireReleaseAndBus(t *testing.T) {
-	l, bus, ctx, cleanup := newRedisLocker(t)
+// TestTryLock_basic verifies the acquire → contention → release → re-acquire
+// cycle using TryLock.
+func TestTryLock_basic(t *testing.T) {
+	l, _, cleanup := newTestRedisLocker(t)
 	defer cleanup()
-
-	lockCh, err := bus.Subscribe(ctx, "lock:k")
-	if err != nil {
-		t.Fatalf("subscribe lock: %v", err)
-	}
-	unlockCh, err := bus.Subscribe(ctx, "unlock:k")
-	if err != nil {
-		t.Fatalf("subscribe unlock: %v", err)
-	}
-
-	if err := l.Acquire(ctx, "k", time.Second); err != nil {
-		t.Fatalf("acquire: %v", err)
-	}
-	select {
-	case <-lockCh:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for lock publish")
-	}
-	if err := l.Release(ctx, "k"); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-	select {
-	case <-unlockCh:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for unlock publish")
-	}
-	l.mu.Lock()
-	if _, ok := l.tokens["k"]; ok {
-		t.Fatal("token not cleaned up on release")
-	}
-	l.mu.Unlock()
+	ctx := context.Background()
 
 	ok, err := l.TryLock(ctx, "k", time.Second)
 	if err != nil || !ok {
-		t.Fatalf("trylock: %v ok %v", err, ok)
+		t.Fatalf("first TryLock: ok=%v err=%v", ok, err)
 	}
-	if ok, err := l.TryLock(ctx, "k", time.Second); err != nil || ok {
-		t.Fatalf("expected lock held, ok %v err %v", ok, err)
+
+	// Lock is held — second attempt must fail.
+	ok, err = l.TryLock(ctx, "k", time.Second)
+	if err != nil || ok {
+		t.Fatalf("second TryLock should fail while lock is held: ok=%v err=%v", ok, err)
 	}
+
 	if err := l.Release(ctx, "k"); err != nil {
-		t.Fatalf("release: %v", err)
+		t.Fatalf("Release: %v", err)
+	}
+
+	// After release the key must be acquirable again.
+	ok, err = l.TryLock(ctx, "k", time.Second)
+	if err != nil || !ok {
+		t.Fatalf("TryLock after Release: ok=%v err=%v", ok, err)
 	}
 }
 
-func TestRedisAcquireTimeout(t *testing.T) {
-	l1, bus, ctx, cleanup := newRedisLocker(t)
+// TestRelease_ownershipCheck verifies that a locker without the token for a key
+// cannot release a lock held by another locker instance.
+func TestRelease_ownershipCheck(t *testing.T) {
+	l1, _, cleanup := newTestRedisLocker(t)
 	defer cleanup()
-	l2 := NewRedis(l1.client, bus)
+	// l2 shares the same Redis but has no entry for "k".
+	l2 := NewRedis(l1.client)
+	ctx := context.Background()
 
-	if ok, err := l1.TryLock(ctx, "k", 0); err != nil || !ok {
-		t.Fatalf("initial trylock: %v ok %v", err, ok)
+	ok, err := l1.TryLock(ctx, "k", 5*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("l1.TryLock: ok=%v err=%v", ok, err)
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	if err := l2.Acquire(cctx, "k", 0); err == nil {
-		t.Fatal("expected timeout error")
+	// l2 has no token for "k"; Release must be a no-op.
+	if err := l2.Release(ctx, "k"); err != nil {
+		t.Fatalf("l2.Release: %v", err)
 	}
-	if time.Since(start) > 20*time.Millisecond {
-		t.Fatal("acquire did not respect context timeout")
+
+	// l1 must still hold the lock.
+	ok, err = l1.TryLock(ctx, "k", time.Second)
+	if err != nil || ok {
+		t.Fatalf("lock should still be held by l1 after l2.Release: ok=%v err=%v", ok, err)
+	}
+
+	if err := l1.Release(ctx, "k"); err != nil {
+		t.Fatalf("l1.Release: %v", err)
+	}
+}
+
+// TestAcquire_waits verifies that Acquire blocks while the lock is held and
+// returns promptly after the holder calls Release.
+// miniredis does not publish keyspace notifications, so this test exercises
+// the polling fallback path only.
+func TestAcquire_waits(t *testing.T) {
+	l, _, cleanup := newTestRedisLocker(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Goroutine A acquires the lock.
+	ok, err := l.TryLock(ctx, "k", 5*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("TryLock: ok=%v err=%v", ok, err)
+	}
+
+	// Goroutine B tries to Acquire — must block.
+	done := make(chan error, 1)
+	go func() {
+		done <- l.Acquire(ctx, "k", 5*time.Second)
+	}()
+
+	// Give B time to enter the wait loop.
+	time.Sleep(20 * time.Millisecond)
+
+	if err := l.Release(ctx, "k"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("B.Acquire returned error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("B did not acquire the lock within 500 ms after Release")
+	}
+}
+
+// TestTTL_expiry verifies that a lock with a short TTL is released automatically
+// by Redis, allowing a subsequent TryLock to succeed.
+func TestTTL_expiry(t *testing.T) {
+	l, mr, cleanup := newTestRedisLocker(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	ok, err := l.TryLock(ctx, "k", 100*time.Millisecond)
+	if err != nil || !ok {
+		t.Fatalf("TryLock: ok=%v err=%v", ok, err)
+	}
+
+	// Advance miniredis internal clock past the TTL without real sleeping.
+	mr.FastForward(200 * time.Millisecond)
+
+	// The Redis key has expired; a new TryLock must succeed.
+	ok, err = l.TryLock(ctx, "k", time.Second)
+	if err != nil || !ok {
+		t.Fatalf("TryLock after TTL expiry: ok=%v err=%v", ok, err)
 	}
 }

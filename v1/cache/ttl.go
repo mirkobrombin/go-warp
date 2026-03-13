@@ -22,14 +22,14 @@ type TTLStrategy interface {
 // is increased by Increment, up to MaxTTL if set. Otherwise the TTL is
 // decreased by Decrement but not below MinTTL.
 type TTLOptions struct {
-	Sliding       bool
-	FreqThreshold time.Duration
-	Increment     time.Duration
-	Decrement     time.Duration
-	MinTTL        time.Duration
-	MaxTTL        time.Duration
-	FailSafeGracePeriod time.Duration
-	SoftTimeout         time.Duration
+	Sliding               bool
+	FreqThreshold         time.Duration
+	Increment             time.Duration
+	Decrement             time.Duration
+	MinTTL                time.Duration
+	MaxTTL                time.Duration
+	FailSafeGracePeriod   time.Duration
+	SoftTimeout           time.Duration
 	EagerRefreshThreshold float64
 }
 

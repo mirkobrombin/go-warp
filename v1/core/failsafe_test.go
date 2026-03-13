@@ -176,12 +176,12 @@ func TestFailSafe_ReturnsErrorIfNotFound(t *testing.T) {
 
 	w.Register(key, ModeStrongLocal, 50*time.Millisecond, cache.WithFailSafe(1*time.Hour))
 	w.Get(context.Background(), key)
-	
+
 	time.Sleep(100 * time.Millisecond)
 
 	// Simulate deletion from DB (Get returns !ok or ErrNotFound)
 	delete(store.data, key)
-	
+
 	// Get -> Should return ErrNotFound (or zero/false), NOT stale data.
 	_, err := w.Get(context.Background(), key)
 	if !errors.Is(err, ErrNotFound) {
