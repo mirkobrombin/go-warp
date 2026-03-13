@@ -35,9 +35,10 @@ func (b *NATSWatchBus) Publish(ctx context.Context, key string, data []byte) err
 	return b.conn.Publish(key, data)
 }
 
-// PublishPrefix publishes data to all watched keys that start with prefix.
-// It iterates the in-process watch index and publishes to each matching key;
-// prefix subscribers receive the message via NATS wildcard routing.
+// PublishPrefix publishes val to all keys with the given prefix that are
+// watched in the current process. Cross-process fan-out is not supported —
+// only direct Publish calls (which route through NATS) are delivered to
+// remote instances. Use Publish with explicit keys for cross-node delivery.
 func (b *NATSWatchBus) PublishPrefix(ctx context.Context, prefix string, data []byte) error {
 	select {
 	case <-ctx.Done():
