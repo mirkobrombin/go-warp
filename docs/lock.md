@@ -32,6 +32,20 @@ Each `TryLock` generates a unique UUID token stored as the Redis key's value.
 `Release` runs a Lua script that deletes the key only when the stored value
 matches the caller's token — preventing any other holder from being evicted.
 
+### `NewNATS`
+
+```go
+func NewNATS(js jetstream.JetStream, bucket string) *NATS
+```
+Creates a new NATS JetStream-backed distributed locker. `bucket` is the JetStream
+KV bucket name; it is created automatically if absent. No Redis required.
+
+```go
+nc, _ := nats.Connect(nats.DefaultURL)
+js, _ := jetstream.New(nc)
+locker := lock.NewNATS(js, "my-locks")
+```
+
 ### `Locker` Interface
 
 ```go

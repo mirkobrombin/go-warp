@@ -7,7 +7,9 @@ import (
 	"github.com/mirkobrombin/go-warp/v1/merge"
 	"github.com/mirkobrombin/go-warp/v1/syncbus"
 	"github.com/mirkobrombin/go-warp/v1/syncbus/mesh"
+	busnats "github.com/mirkobrombin/go-warp/v1/syncbus/nats"
 	busredis "github.com/mirkobrombin/go-warp/v1/syncbus/redis"
+	nats "github.com/nats-io/nats.go"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -72,4 +74,33 @@ func NewInMemoryStandalone[T any]() *core.Warp[T] {
 	b := syncbus.NewInMemoryBus()
 	engine := merge.NewEngine[T]()
 	return core.New[T](c, s, b, engine)
+}
+
+// NATSOptions configures a connection to a NATS server.
+type NATSOptions struct {
+	Conn *nats.Conn
+}
+
+// NewNATSEventual creates a Warp instance configured for eventual consistency
+// using NATS Core as the synchronization bus. L2 is in-memory per node, making
+// this preset suitable when NATS is already present in the infrastructure but
+// a shared persistent store is not required.
+func NewNATSEventual[T any](opts NATSOptions) *core.Warp[T] {
+	c := cache.NewInMemory[merge.Value[T]]()
+	s := adapter.NewInMemoryStore[T]()
+	bus := busnats.NewNATSBus(opts.Conn)
+	engine := merge.NewEngine[T]()
+	return core.New[T](c, s, bus, engine)
+}
+
+// NewNATSStrong creates a Warp instance backed by NATS with strong-consistency
+// semantics as the user-facing intent.
+//
+// NOTE: the current implementation is identical to NewNATSEventual — strong
+// consistency is not enforced at this time. This constructor is provided as a
+// semantic marker for future enforcement and to signal intent at the call site.
+// Do not rely on strong consistency guarantees in production until this is
+// explicitly implemented.
+func NewNATSStrong[T any](opts NATSOptions) *core.Warp[T] {
+	return NewNATSEventual[T](opts)
 }
