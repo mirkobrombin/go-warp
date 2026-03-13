@@ -22,6 +22,9 @@ type NATS struct {
 	bucket string
 	mu     sync.Mutex
 	locks  map[string]*lockEntry
+	kv     jetstream.KeyValue
+	kvOnce sync.Once
+	kvErr  error
 }
 
 // NewNATS returns a NATS JetStream-backed distributed locker.
@@ -34,25 +37,30 @@ func NewNATS(js jetstream.JetStream, bucket string) *NATS {
 	}
 }
 
-func (n *NATS) getKV(ctx context.Context) (jetstream.KeyValue, error) {
-	kv, err := n.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:  n.bucket,
-		History: 1,
+func (n *NATS) getKV() (jetstream.KeyValue, error) {
+	n.kvOnce.Do(func() {
+		kv, err := n.js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
+			Bucket:  n.bucket,
+			History: 1,
+		})
+		if err == nil {
+			n.kv = kv
+			return
+		}
+		if errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
+			n.kv, n.kvErr = n.js.KeyValue(context.Background(), n.bucket)
+			return
+		}
+		n.kvErr = err
 	})
-	if err == nil {
-		return kv, nil
-	}
-	if errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
-		return n.js.KeyValue(ctx, n.bucket)
-	}
-	return nil, err
+	return n.kv, n.kvErr
 }
 
 // TryLock attempts to obtain the lock without waiting. It returns true on success.
 // If ttl is greater than zero, a goroutine is scheduled to release the lock after
 // the duration (per-key TTL, since JetStream KV TTL is bucket-level only).
 func (n *NATS) TryLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
-	kv, err := n.getKV(ctx)
+	kv, err := n.getKV()
 	if err != nil {
 		return false, err
 	}
@@ -88,7 +96,7 @@ func (n *NATS) Acquire(ctx context.Context, key string, ttl time.Duration) error
 		if ok {
 			return nil
 		}
-		kv, err := n.getKV(ctx)
+		kv, err := n.getKV()
 		if err != nil {
 			return err
 		}
@@ -134,7 +142,7 @@ func (n *NATS) Release(ctx context.Context, key string) error {
 // expected token, using an optimistic last-revision check to prevent stealing
 // a lock re-acquired by another caller after expiry or a network partition.
 func (n *NATS) releaseWithToken(ctx context.Context, key, token string) error {
-	kv, err := n.getKV(ctx)
+	kv, err := n.getKV()
 	if err != nil {
 		return err
 	}

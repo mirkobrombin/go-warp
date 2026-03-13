@@ -93,11 +93,14 @@ func NewNATSEventual[T any](opts NATSOptions) *core.Warp[T] {
 	return core.New[T](c, s, bus, engine)
 }
 
-// NewNATSStrong creates a Warp instance with NATS Core as the synchronization bus.
-// This preset expresses user intent for strong consistency; however, NATS Core does
-// not support topology-aware quorum — full quorum across nodes requires NATS JetStream
-// (future work). The underlying configuration is identical to NewNATSEventual and
-// eventual consistency is used as a safe default.
+// NewNATSStrong creates a Warp instance backed by NATS with strong-consistency
+// semantics as the user-facing intent.
+//
+// NOTE: the current implementation is identical to NewNATSEventual — strong
+// consistency is not enforced at this time. This constructor is provided as a
+// semantic marker for future enforcement and to signal intent at the call site.
+// Do not rely on strong consistency guarantees in production until this is
+// explicitly implemented.
 func NewNATSStrong[T any](opts NATSOptions) *core.Warp[T] {
 	return NewNATSEventual[T](opts)
 }
