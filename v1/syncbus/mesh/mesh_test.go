@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
 
 func findMulticastInterface() *net.Interface {
@@ -18,7 +20,28 @@ func findMulticastInterface() *net.Interface {
 	return nil
 }
 
+// requireMulticast skips the test if multicast UDP is not functional in the
+// current environment (e.g. CI containers or hosts without multicast routing).
+// It probes using the same ipv4.PacketConn.JoinGroup path used by NewMeshBus.
+func requireMulticast(t *testing.T) {
+	t.Helper()
+	addr, err := net.ResolveUDPAddr("udp4", "239.0.0.1:0")
+	if err != nil {
+		t.Skipf("requires multicast: cannot resolve 239.0.0.1: %v", err)
+	}
+	c, err := net.ListenPacket("udp4", "0.0.0.0:0")
+	if err != nil {
+		t.Skipf("requires multicast: cannot open UDP socket: %v", err)
+	}
+	defer c.Close()
+	pc := ipv4.NewPacketConn(c)
+	if err := pc.JoinGroup(nil, addr); err != nil {
+		t.Skipf("requires a functional multicast environment: %v", err)
+	}
+}
+
 func TestMeshIntegration(t *testing.T) {
+	requireMulticast(t)
 	ifi := findMulticastInterface()
 	ifaceName := ""
 	if ifi != nil {
@@ -70,6 +93,7 @@ func TestMeshIntegration(t *testing.T) {
 }
 
 func TestMeshLoopback(t *testing.T) {
+	requireMulticast(t)
 	ifi := findMulticastInterface()
 	ifaceName := ""
 	if ifi != nil {
@@ -110,6 +134,7 @@ func TestMeshLoopback(t *testing.T) {
 }
 
 func TestMeshGossip(t *testing.T) {
+	requireMulticast(t)
 	portA := 9000 + (int(time.Now().Unix()) % 100)
 	portB := portA + 1
 
