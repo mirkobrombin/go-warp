@@ -113,9 +113,9 @@ func (r *Redis) cleanupLocal(key, token string) {
 // Acquire blocks until the lock for key is obtained or ctx is cancelled.
 // It subscribes once to keyspace notifications (__keyevent@0__:del and :expired)
 // before the retry loop so that a Release firing between a failed TryLock and
-// the wait cannot be missed. When the server does not publish those events the
-// select falls through on a timer and retries with exponential back-off
-// (5 ms → 500 ms).
+// the wait cannot be missed (lost-wakeup prevention). When the server does not
+// publish those events the select falls through on a timer and retries with
+// exponential back-off (5 ms → 500 ms).
 func (r *Redis) Acquire(ctx context.Context, key string, ttl time.Duration) error {
 	const baseInterval = 5 * time.Millisecond
 	const maxInterval = 500 * time.Millisecond
@@ -141,17 +141,27 @@ func (r *Redis) Acquire(ctx context.Context, key string, ttl time.Duration) erro
 		}
 
 		timer := time.NewTimer(interval)
-		select {
-		case <-msgCh:
-			timer.Stop()
-			interval = baseInterval // reset after a real wake-up
-		case <-timer.C:
-			if interval < maxInterval {
-				interval *= 2
+	waitForEvent:
+		for {
+			select {
+			case msg, open := <-msgCh:
+				if !open {
+					break waitForEvent
+				}
+				if msg.Payload == key {
+					interval = baseInterval // reset after a real wake-up
+					break waitForEvent
+				}
+			case <-timer.C:
+				if interval < maxInterval {
+					interval *= 2
+				}
+				break waitForEvent
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
 			}
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
 		}
+		timer.Stop()
 	}
 }

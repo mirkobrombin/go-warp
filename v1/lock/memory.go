@@ -122,28 +122,36 @@ func (l *InMemory) TryLock(ctx context.Context, key string, ttl time.Duration) (
 }
 
 // Acquire blocks until the lock is obtained or the context is cancelled.
+//
+// The subscription to "unlock:<key>" is established before each TryLock
+// attempt so that a Release that fires in the window between a failed
+// TryLock and a later Subscribe call cannot be missed.
 func (l *InMemory) Acquire(ctx context.Context, key string, ttl time.Duration) error {
-	if err := l.ensureSubscriptions(key); err != nil {
-		return err
-	}
 	for {
-		ok, err := l.TryLock(ctx, key, ttl)
+		// Subscribe BEFORE attempting the lock so we cannot miss a release
+		// notification that fires between a failed TryLock and the subscribe.
+		ch, err := l.bus.Subscribe(ctx, "unlock:"+key)
 		if err != nil {
 			return err
 		}
+
+		ok, err := l.TryLock(ctx, key, ttl)
+		if err != nil {
+			_ = l.bus.Unsubscribe(context.Background(), "unlock:"+key, ch)
+			return err
+		}
 		if ok {
-			_ = l.bus.Publish(ctx, "lock:"+key)
+			_ = l.bus.Unsubscribe(context.Background(), "unlock:"+key, ch)
 			return nil
 		}
-		l.mu.Lock()
-		st := l.locks[key]
-		ch := st.notify
-		l.mu.Unlock()
+
 		select {
 		case <-ch:
 		case <-ctx.Done():
+			_ = l.bus.Unsubscribe(context.Background(), "unlock:"+key, ch)
 			return ctx.Err()
 		}
+		_ = l.bus.Unsubscribe(context.Background(), "unlock:"+key, ch)
 	}
 }
 
