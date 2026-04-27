@@ -74,9 +74,22 @@ func (a *AdaptiveCache[T]) Get(ctx context.Context, key string) (T, bool, error)
 
 // Set stores the key in both underlying caches.
 func (a *AdaptiveCache[T]) Set(ctx context.Context, key string, value T, ttl time.Duration) error {
-	if err := a.lru.Set(ctx, key, value, ttl); err != nil {
-		return err
+	err1 := a.lru.Set(ctx, key, value, ttl)
+	err2 := a.lfu.Set(ctx, key, value, ttl)
+	if err1 != nil {
+		return err1
 	}
+	return err2
+}
+
+func (a *AdaptiveCache[T]) Invalidate(ctx context.Context, key string) error {
+	err1 := a.lru.Invalidate(ctx, key)
+	err2 := a.lfu.Invalidate(ctx, key)
+	if err1 != nil {
+		return err1
+	}
+	return err2
+}
 	return a.lfu.Set(ctx, key, value, ttl)
 }
 

@@ -43,9 +43,10 @@ func (b *NATSBus) Publish(ctx context.Context, key string, opts ...syncbus.Publi
 	b.mu.Lock()
 	if _, ok := b.pending[key]; ok {
 		b.mu.Unlock()
-		return nil // deduplicate
+		return nil
 	}
 	b.pending[key] = struct{}{}
+	conn := b.conn
 	b.mu.Unlock()
 
 	if j := rand.Int63n(int64(10 * time.Millisecond)); j > 0 {
@@ -63,12 +64,12 @@ func (b *NATSBus) Publish(ctx context.Context, key string, opts ...syncbus.Publi
 	backoff := 100 * time.Millisecond
 	var err error
 	for {
-		err = b.conn.Publish(key, []byte(id))
+		err = conn.Publish(key, []byte(id))
 		if err == nil {
 			b.published.Add(1)
 			break
 		}
-		_ = b.reconnect()
+		conn = b.reconnect()
 		select {
 		case <-ctx.Done():
 			b.mu.Lock()
@@ -95,8 +96,6 @@ func (b *NATSBus) Publish(ctx context.Context, key string, opts ...syncbus.Publi
 	return err
 }
 
-// PublishAndAwait implements Bus.PublishAndAwait. NATS core subjects do not expose
-// subscriber counts, so only a quorum of 1 is supported.
 func (b *NATSBus) PublishAndAwait(ctx context.Context, key string, replicas int, opts ...syncbus.PublishOption) error {
 	if replicas <= 0 {
 		replicas = 1
@@ -131,14 +130,15 @@ func (b *NATSBus) Subscribe(ctx context.Context, key string) (<-chan syncbus.Eve
 	for {
 		b.mu.Lock()
 		sub := b.subs[key]
-		b.mu.Unlock()
 		if sub != nil {
-			b.mu.Lock()
 			sub.chans = append(sub.chans, ch)
 			b.mu.Unlock()
 			break
 		}
-		ns, err := b.conn.Subscribe(key, b.natsHandler(key))
+		conn := b.conn
+		b.mu.Unlock()
+
+		ns, err := conn.Subscribe(key, b.natsHandler(key))
 		if err == nil {
 			b.mu.Lock()
 			b.subs[key] = &natsSubscription{sub: ns, chans: []chan syncbus.Event{ch}}
@@ -249,15 +249,19 @@ func (b *NATSBus) natsHandler(key string) nats.MsgHandler {
 	}
 }
 
-func (b *NATSBus) reconnect() error {
+func (b *NATSBus) reconnect() *nats.Conn {
 	if b.conn != nil && b.conn.IsConnected() {
-		return nil
+		return b.conn
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.conn != nil && b.conn.IsConnected() {
+		return b.conn
 	}
 	newConn, err := b.conn.Opts.Connect()
 	if err != nil {
-		return err
+		return b.conn
 	}
-	b.mu.Lock()
 	b.conn = newConn
 	for key, sub := range b.subs {
 		ns, err := b.conn.Subscribe(key, b.natsHandler(key))
@@ -266,6 +270,5 @@ func (b *NATSBus) reconnect() error {
 		}
 		sub.sub = ns
 	}
-	b.mu.Unlock()
-	return nil
+	return b.conn
 }
