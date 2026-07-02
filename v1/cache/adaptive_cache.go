@@ -82,6 +82,7 @@ func (a *AdaptiveCache[T]) Set(ctx context.Context, key string, value T, ttl tim
 	return err2
 }
 
+// Invalidate removes the key from both caches.
 func (a *AdaptiveCache[T]) Invalidate(ctx context.Context, key string) error {
 	err1 := a.lru.Invalidate(ctx, key)
 	err2 := a.lfu.Invalidate(ctx, key)
@@ -89,16 +90,6 @@ func (a *AdaptiveCache[T]) Invalidate(ctx context.Context, key string) error {
 		return err1
 	}
 	return err2
-}
-	return a.lfu.Set(ctx, key, value, ttl)
-}
-
-// Invalidate removes the key from both caches.
-func (a *AdaptiveCache[T]) Invalidate(ctx context.Context, key string) error {
-	if err := a.lru.Invalidate(ctx, key); err != nil {
-		return err
-	}
-	return a.lfu.Invalidate(ctx, key)
 }
 
 // Close releases resources held by the underlying caches.
