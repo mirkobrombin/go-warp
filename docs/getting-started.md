@@ -7,7 +7,7 @@ This guide walks through installing Warp and building a realistic application: a
 Install the library using `go get`:
 
 ```bash
-go get github.com/mirkobrombin/go-warp/v1
+go get github.com/mirkobrombin/go-warp/v2
 ```
 
 ## Scenario: User Session Store
@@ -29,10 +29,10 @@ import (
     "fmt"
     "time"
 
-    "github.com/mirkobrombin/go-warp/v1/adapter"
-    "github.com/mirkobrombin/go-warp/v1/cache"
-    "github.com/mirkobrombin/go-warp/v1/core"
-    "github.com/mirkobrombin/go-warp/v1/merge"
+    "github.com/mirkobrombin/go-warp/v2/adapter"
+    "github.com/mirkobrombin/go-warp/v2/cache"
+    "github.com/mirkobrombin/go-warp/v2/core"
+    "github.com/mirkobrombin/go-warp/v2/merge"
 )
 
 type Session struct {
@@ -56,7 +56,7 @@ func main() {
 
     // 4. Registration: We MUST register keys before using them.
     // ModeStrongLocal: Strong consistency on this node, no distributed events.
-    w.Register("session:*", core.ModeStrongLocal, 30*time.Minute)
+    w.Register("session:u123", core.ModeStrongLocal, 30*time.Minute)
 
     // Usage
     sess := Session{UserID: "u123", Username: "alice"}
@@ -80,7 +80,7 @@ func main() {
 Now, imagine we scale our application to multiple nodes. If Alice logs out on Node A, Node B must also invalidate her session. We use `ModeEventualDistributed` and a `SyncBus`.
 
 ```go
-import "github.com/mirkobrombin/go-warp/v1/syncbus"
+import "github.com/mirkobrombin/go-warp/v2/syncbus"
 
 // ... inside main ...
 
@@ -91,7 +91,7 @@ bus := syncbus.NewInMemoryBus()
 w := core.New[Session](c, store, bus, merge.NewEngine[Session]())
 
 // 2. Change Mode: EventualDistributed ensures invalidations are propagated.
-w.Register("session:*", core.ModeEventualDistributed, 30*time.Minute)
+w.Register("session:u123", core.ModeEventualDistributed, 30*time.Minute)
 
 // Node A invalidates
 w.Invalidate(ctx, "session:u123")
@@ -127,7 +127,7 @@ import (
     "net/http"
     "github.com/prometheus/client_golang/prometheus"
     "github.com/prometheus/client_golang/prometheus/promhttp"
-    "github.com/mirkobrombin/go-warp/v1/metrics"
+    "github.com/mirkobrombin/go-warp/v2/metrics"
 )
 
 // ...
@@ -145,6 +145,7 @@ go http.ListenAndServe(":2112", nil)
 
 ## Next Steps
 
+- **[V2 Migration](v2-migration.md)**: Update module paths and review changed behavior.
 - **[Core Concepts](core.md)**: Deep dive into Consistency Modes and Architecture.
 - **[Presets](presets.md)**: Production-ready configurations (NewRedisEventual, etc.).
 - **[Sidecar Mode](sidecar.md)**: Using Warp with Python, Node.js, etc.

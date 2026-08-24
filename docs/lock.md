@@ -30,7 +30,7 @@ best latency.
 #### Ownership guarantee
 Each `TryLock` generates a unique UUID token stored as the Redis key's value.
 `Release` runs a Lua script that deletes the key only when the stored value
-matches the caller's token — preventing any other holder from being evicted.
+matches the caller's token - preventing any other holder from being evicted.
 
 ### `NewNATS`
 

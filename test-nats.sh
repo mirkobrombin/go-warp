@@ -29,6 +29,6 @@ export WARP_TEST_NATS_ADDR="nats://localhost:$NATS_PORT"
 export WARP_TEST_FORCE_REAL="true"
 
 # Run only NATS tests
-go test -v ./v1/syncbus/... -run TestNATS
+go test -v ./syncbus/... -run TestNATS
 
 echo "Tests completed successfully."

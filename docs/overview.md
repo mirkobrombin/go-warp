@@ -4,19 +4,22 @@ Warp is a data orchestration and synchronization layer designed for distributed 
 
 Warp is composed of modular packages:
 
-- [Core](core.md) – orchestrates cache, storage, buses and merge engine.
-- [Cache](cache.md) – pluggable cache implementations with TTL.
-- [Adapter](adapter.md) – abstraction over primary storage used for warmup and fallback.
-- [Sync Bus](syncbus.md) – propagation of invalidations across nodes.
-- [Watch Bus](watchbus.md) – lightweight message bus for streaming byte payloads.
-- [Lock](lock.md) – distributed locking primitives built on the bus.
-- [Leases](leases.md) – revocable grouping of keys renewed periodically.
-- [Versioned Cache](versioned-cache.md) – wraps a cache to keep historical values per key.
-- [Merge Engine](merge.md) – conflict resolution strategies including custom merge functions.
-- [Validator](validator.md) – optional background consistency checks between cache and storage.
-- [Presets](presets.md) – ready-to-use factory functions for common configurations.
-- [Sidecar](sidecar.md) – proxy mode for non-Go applications (RESP protocol).
-- [Metrics](metrics.md) – Prometheus counters and gauges for Warp components.
+Version 2 uses the module path `github.com/mirkobrombin/go-warp/v2`.
+Applications upgrading from v1 should read the [v2 migration guide](v2-migration.md).
+
+- [Core](core.md) - orchestrates cache, storage, buses and merge engine.
+- [Cache](cache.md) - pluggable cache implementations with TTL.
+- [Adapter](adapter.md) - abstraction over primary storage used for warmup and fallback.
+- [Sync Bus](syncbus.md) - propagation of invalidations across nodes.
+- [Watch Bus](watchbus.md) - lightweight message bus for streaming byte payloads.
+- [Lock](lock.md) - distributed locking primitives built on the bus.
+- [Leases](leases.md) - revocable grouping of keys renewed periodically.
+- [Versioned Cache](versioned-cache.md) - wraps a cache to keep historical values per key.
+- [Merge Engine](merge.md) - conflict resolution strategies including custom merge functions.
+- [Validator](validator.md) - optional background consistency checks between cache and storage.
+- [Presets](presets.md) - ready-to-use factory functions for common configurations.
+- [Sidecar](sidecar.md) - proxy mode for non-Go applications (RESP protocol).
+- [Metrics](metrics.md) - Prometheus counters and gauges for Warp components.
 
 ## Deployment
 
@@ -41,10 +44,10 @@ graph LR
     DB[(Primary Storage)]
 ```
 
-- **Buses** – Redis Pub/Sub or Streams, [NATS](glossary.md#nats), [Kafka](glossary.md#kafka), or any transport implementing the `syncbus` interface can be used for
+- **Buses** - Redis Pub/Sub or Streams, [NATS](glossary.md#nats), [Kafka](glossary.md#kafka), or any transport implementing the `syncbus` interface can be used for
   distributed invalidation.
-- **Cache warmup** – call `Warmup` on startup to prefill hot keys via the storage adapter or schedule background warmup cycles.
-- **Validator modes** – run the validator in `ModeNoop` for metrics, `ModeAlert` for external monitoring, or `ModeAutoHeal` to
+- **Cache warmup** - call `Warmup` on startup to prefill hot keys via the storage adapter or schedule background warmup cycles.
+- **Validator modes** - run the validator in `ModeNoop` for metrics, `ModeAlert` for external monitoring, or `ModeAutoHeal` to
   refresh stale cache entries automatically (see [Validator modes](glossary.md#validator-modes)).
 
 Refer to the README for a high level description and to the specific documents for detailed usage examples.
@@ -55,7 +58,7 @@ Refer to the README for a high level description and to the specific documents f
 
 A production setup runs Warp on every application node while relying on an external
 message bus and persistent storage shared across the fleet. Keep the bus
-clustered and highly available (Redis Streams, [NATS](glossary.md#nats), [Kafka](glossary.md#kafka), …) and back it with a
+clustered and highly available (Redis Streams, [NATS](glossary.md#nats), [Kafka](glossary.md#kafka), ...) and back it with a
 reliable data store such as PostgreSQL or another replicated database. Each Warp
 instance exposes a metrics endpoint and connects to the bus for invalidations and
 to storage for warmup and misses.
@@ -107,7 +110,7 @@ Sample Prometheus and Grafana files are provided under `docs/prometheus-scrape.y
 
 ### Warmup and Error Handling
 
-Schedule periodic warmup cycles to pre‑populate popular keys and call `Warmup`
+Schedule periodic warmup cycles to pre-populate popular keys and call `Warmup`
 on startup. When bus or storage operations fail, log and emit metrics for
 visibility, retry transient errors, and fall back to the storage adapter when
 necessary to keep serving requests.

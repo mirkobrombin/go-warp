@@ -32,7 +32,7 @@ By using UDP Multicast and P2P Gossip, Warp Mesh enables nodes to discover each 
 Warp Mesh is typically initialized via `presets`.
 
 ```go
-import "github.com/mirkobrombin/go-warp/v1/syncbus/mesh"
+import "github.com/mirkobrombin/go-warp/v2/syncbus/mesh"
 
 w := presets.NewMeshEventual[MyData](mesh.MeshOptions{
     Port:      7946,               // UDP port for gossip

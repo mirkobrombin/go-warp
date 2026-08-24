@@ -15,7 +15,7 @@ The sidecar runs alongside your application container/process. It maintains an i
 ## Installation
 
 ```bash
-go install github.com/mirkobrombin/go-warp/cmd/warp-proxy@latest
+go install github.com/mirkobrombin/go-warp/v2/cmd/warp-proxy@latest
 ```
 
 ## Usage

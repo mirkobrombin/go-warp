@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mirkobrombin/go-warp/v1/cache"
-	"github.com/mirkobrombin/go-warp/v1/core"
-	"github.com/mirkobrombin/go-warp/v1/merge"
+	"github.com/mirkobrombin/go-warp/v2/cache"
+	"github.com/mirkobrombin/go-warp/v2/core"
+	"github.com/mirkobrombin/go-warp/v2/merge"
 )
 
 var (

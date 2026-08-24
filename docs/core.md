@@ -38,13 +38,13 @@ func New[T any](
 
 ### `Register`
 
-Registers a key pattern with a consistency mode and TTL. **Required** before using any key.
+Registers an exact key with a consistency mode and TTL. **Required** before using any key.
 
 ```go
 func (w *Warp[T]) Register(key string, mode Mode, ttl time.Duration, opts ...cache.TTLOption) bool
 ```
 
-- **key**: The exact key string (patterns not yet supported in v1).
+- **key**: The exact key string. Pattern registration is not supported.
 - **mode**: `ModeStrongLocal`, `ModeEventualDistributed`, or `ModeStrongDistributed`.
 - **ttl**: Duration after which the item expires from L1 cache.
 

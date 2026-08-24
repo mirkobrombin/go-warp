@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mirkobrombin/go-warp/v1/core"
-	"github.com/mirkobrombin/go-warp/v1/presets"
-	"github.com/mirkobrombin/go-warp/v1/syncbus/mesh"
+	"github.com/mirkobrombin/go-warp/v2/core"
+	"github.com/mirkobrombin/go-warp/v2/presets"
+	"github.com/mirkobrombin/go-warp/v2/syncbus/mesh"
 )
 
 func main() {

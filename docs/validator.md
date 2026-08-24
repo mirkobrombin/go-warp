@@ -4,9 +4,9 @@ The `validator` package runs background scans to compare cache entries with the 
 
 ## [Modes](glossary.md#validator-modes)
 
-- `ModeNoop` – only records mismatches.
-- `ModeAlert` – suitable for logging or external alerting.
-- `ModeAutoHeal` – automatically refreshes the cache from the storage when a mismatch is detected.
+- `ModeNoop` - only records mismatches.
+- `ModeAlert` - suitable for logging or external alerting.
+- `ModeAutoHeal` - automatically refreshes the cache from the storage when a mismatch is detected.
 
 ## API Reference
 

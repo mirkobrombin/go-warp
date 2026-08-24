@@ -29,6 +29,6 @@ echo "Running tests against real Kafka (Redpanda)..."
 export WARP_TEST_KAFKA_ADDR="localhost:$KAFKA_PORT"
 export WARP_TEST_FORCE_REAL="true"
 
-go test -v ./v1/syncbus/... -run TestKafka
+go test -v ./syncbus/... -run TestKafka
 
 echo "Tests completed successfully."

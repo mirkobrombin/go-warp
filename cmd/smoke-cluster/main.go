@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mirkobrombin/go-warp/v1/adapter"
-	"github.com/mirkobrombin/go-warp/v1/cache"
-	"github.com/mirkobrombin/go-warp/v1/core"
-	"github.com/mirkobrombin/go-warp/v1/merge"
-	"github.com/mirkobrombin/go-warp/v1/presets"
-	"github.com/mirkobrombin/go-warp/v1/syncbus/mesh"
+	"github.com/mirkobrombin/go-warp/v2/adapter"
+	"github.com/mirkobrombin/go-warp/v2/cache"
+	"github.com/mirkobrombin/go-warp/v2/core"
+	"github.com/mirkobrombin/go-warp/v2/merge"
+	"github.com/mirkobrombin/go-warp/v2/presets"
+	"github.com/mirkobrombin/go-warp/v2/syncbus/mesh"
 	redis "github.com/redis/go-redis/v9"
 )
 

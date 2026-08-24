@@ -2,10 +2,10 @@
 
 The `presets` package offers pre-configured factory functions to simplify Warp initialization for common use cases. Instead of manually wiring the Cache, Store, Bus, and Engine, you can use these one-liners to get a production-ready setup.
 
-## v1/presets
+## Import
 
 ```go
-import "github.com/mirkobrombin/go-warp/v1/presets"
+import "github.com/mirkobrombin/go-warp/v2/presets"
 ```
 
 ### `NewRedisEventual`
@@ -40,8 +40,8 @@ w := presets.NewRedisStrong[Config](presets.RedisOptions{
 })
 
 // Remember to register keys with ModeStrongDistributed
-w.Register("config:*", core.ModeStrongDistributed, 24*time.Hour)
-w.SetQuorum("config:*", 3)
+w.Register("config:primary", core.ModeStrongDistributed, 24*time.Hour)
+w.SetQuorum("config:primary", 3)
 ```
 
 > [!NOTE]
@@ -93,7 +93,7 @@ w := presets.NewNATSEventual[MyData](presets.NATSOptions{Conn: nc})
 
 ### `NewNATSStrong`
 
-Expresses user intent for **strong consistency** with NATS Core as the bus. The underlying configuration is identical to `NewNATSEventual` — NATS Core does not support topology-aware quorum. Full quorum across nodes requires NATS JetStream (future work).
+Expresses user intent for **strong consistency** with NATS Core as the bus. The underlying configuration is identical to `NewNATSEventual` - NATS Core does not support topology-aware quorum. Full quorum across nodes requires NATS JetStream (future work).
 
 - **Architecture**:
     - **L1**: In-Memory Cache.

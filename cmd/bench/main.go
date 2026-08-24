@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/dgraph-io/ristretto"
-	"github.com/mirkobrombin/go-warp/v1/core"
-	"github.com/mirkobrombin/go-warp/v1/presets"
-	"github.com/mirkobrombin/go-warp/v1/syncbus/mesh"
+	"github.com/mirkobrombin/go-warp/v2/core"
+	"github.com/mirkobrombin/go-warp/v2/presets"
+	"github.com/mirkobrombin/go-warp/v2/syncbus/mesh"
 	redis "github.com/redis/go-redis/v9"
 )
 

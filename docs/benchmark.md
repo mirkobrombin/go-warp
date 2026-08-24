@@ -1,26 +1,27 @@
 # Cache Benchmarks
 
-Benchmark results generated with `go test -bench . -benchmem`.
+Recorded on 2026-08-24 with Go 1.26.0 on linux/amd64 and an Intel
+i7-13700H. Results vary by CPU, scheduler, and dependency version.
 
 ```
-$ go test -bench . -benchmem ./v1/cache
-BenchmarkInMemoryCacheSet-5      1000000              1750 ns/op             372 B/op          3 allocs/op
-BenchmarkInMemoryCacheGet-5      9723705               122.0 ns/op             0 B/op          0 allocs/op
-BenchmarkRistrettoCacheSet-5      281559              3730 ns/op             426 B/op         12 allocs/op
-BenchmarkRistrettoCacheGet-5     7991107               150.2 ns/op            19 B/op          1 allocs/op
-BenchmarkRedisCacheSet-5           38400             34865 ns/op            1404 B/op         37 allocs/op
-BenchmarkRedisCacheGet-5           39525             29205 ns/op             536 B/op         23 allocs/op
+$ go test -run '^$' -bench . -benchmem ./cache
+BenchmarkInMemoryCacheSet-20      1826172       621.8 ns/op      352 B/op       4 allocs/op
+BenchmarkInMemoryCacheGet-20     11826658        99.89 ns/op       0 B/op       0 allocs/op
+BenchmarkRistrettoCacheSet-20      567345      3926 ns/op        409 B/op      13 allocs/op
+BenchmarkRistrettoCacheGet-20     9053079       136.0 ns/op       20 B/op       1 allocs/op
+BenchmarkRedisCacheSet-20           29900     48861 ns/op       1890 B/op      40 allocs/op
+BenchmarkRedisCacheGet-20           28083     36518 ns/op        921 B/op      27 allocs/op
 ```
 
 ## Comparison
 
-* **InMemoryCache** is the fastest: ~122 ns for `Get` with no allocations and ~1.75 µs for `Set` with few allocations.
-* **Ristretto** offers comparable read performance (~150 ns) but uses more memory and allocations, while writes are about 2× slower.
-* **Redis** (through an in-memory server) is significantly slower (~29–35 µs) and uses much more memory; network and serialization overhead impact performance.
+* **InMemoryCache** reads in about 100 ns without allocating and writes in about 622 ns.
+* **Ristretto** reads in about 136 ns and writes in about 3.9 microseconds.
+* **Redis** through miniredis reads in about 36.5 microseconds and writes in about 48.9 microseconds.
 
 ## Warp Bench Tool
 
-We provide a dedicated benchmarking tool `warp-bench` to verify performance independently.
+The `warp-bench` command measures the complete in-memory Warp path.
 
 ### Build and Run
 
@@ -31,12 +32,12 @@ go build -o warp-bench ./cmd/warp-bench/main.go
 
 ### Results (Core / In-Memory Standalone)
 
-*Environment: Local Dev Machine*
+Environment: the same machine and toolchain recorded above.
 
 | Concurrency | Requests | Payload | Throughput | Avg Latency |
 |:-----------:|:--------:|:-------:|:----------:|:-----------:|
-| 10          | 100k     | 256B    | ~1.6M req/s| 611 ns      |
-| 50          | 500k     | 256B    | ~860k req/s| 1157 ns     |
-| 100         | 1M       | 256B    | ~1.5M req/s| 630 ns      |
+| 10          | 100k     | 256B    | 1.88M req/s | 533 ns      |
+| 50          | 500k     | 256B    | 1.31M req/s | 762 ns      |
+| 100         | 1M       | 256B    | 1.17M req/s | 854 ns      |
 
-> **Note**: These numbers measure the raw overhead of `Warp Core` (Cache + Store + Bus + Engine integration) in "Standalone" mode (no network IO). They confirm the efficiency of the architecture.
+These numbers measure the in-memory standalone path without network I/O.

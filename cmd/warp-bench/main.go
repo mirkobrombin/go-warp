@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mirkobrombin/go-warp/v1/core"
-	"github.com/mirkobrombin/go-warp/v1/presets"
+	"github.com/mirkobrombin/go-warp/v2/core"
+	"github.com/mirkobrombin/go-warp/v2/presets"
 )
 
 var (

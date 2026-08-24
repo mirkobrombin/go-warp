@@ -1,0 +1,65 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/mirkobrombin/go-warp/v2/adapter"
+	"github.com/mirkobrombin/go-warp/v2/cache"
+	"github.com/mirkobrombin/go-warp/v2/core"
+	"github.com/mirkobrombin/go-warp/v2/merge"
+	"github.com/mirkobrombin/go-warp/v2/syncbus"
+	"github.com/mirkobrombin/go-warp/v2/watchbus"
+)
+
+func main() {
+	ctx := context.Background()
+	store := adapter.NewInMemoryStore[int]()
+	bus := syncbus.NewInMemoryBus()
+	engine := merge.NewEngine[int]()
+	engine.Register("counter", func(old, new int) (int, error) {
+		return old + new, nil
+	})
+
+	w1 := core.New(cache.NewInMemory[merge.Value[int]](), store, bus, engine)
+	w2 := core.New(cache.NewInMemory[merge.Value[int]](), store, bus, engine)
+
+	w1.Register("counter", core.ModeEventualDistributed, time.Minute)
+	w2.Register("counter", core.ModeEventualDistributed, time.Minute)
+
+	ch, _ := bus.Subscribe(ctx, "counter")
+	defer bus.Unsubscribe(ctx, "counter", ch)
+	go func() {
+		for range ch {
+			_ = w2.Invalidate(ctx, "counter")
+		}
+	}()
+
+	if err := w1.Set(ctx, "counter", 10); err != nil {
+		panic(err)
+	}
+	if err := w2.Set(ctx, "counter", 5); err != nil {
+		panic(err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	v1, _ := w1.Get(ctx, "counter")
+	v2, _ := w2.Get(ctx, "counter")
+	fmt.Println("node1:", v1, "node2:", v2)
+
+	// WatchBus prefix example
+	wb := watchbus.NewInMemory()
+	pch, err := core.WatchPrefix(ctx, wb, "task:")
+	if err != nil {
+		panic(err)
+	}
+	go func() {
+		for msg := range pch {
+			fmt.Printf("task event: %s\n", msg)
+		}
+	}()
+	_ = wb.Publish(ctx, "task:1", []byte("done"))
+	_ = wb.PublishPrefix(ctx, "task:", []byte("all done"))
+	time.Sleep(100 * time.Millisecond)
+}

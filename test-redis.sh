@@ -27,6 +27,6 @@ done
 echo "Running tests against real Redis..."
 export WARP_TEST_REDIS_ADDR="localhost:$REDIS_PORT"
 export WARP_TEST_FORCE_REAL=true
-go test -v ./v1/adapter ./v1/syncbus -run Redis
+go test -v ./adapter ./syncbus -run Redis
 
 echo "Tests completed successfully."
