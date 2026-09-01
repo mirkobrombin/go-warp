@@ -90,6 +90,7 @@ quorum transport.
 | `metrics` | Prometheus metrics |
 | `presets` | Common Redis, NATS, mesh, and standalone assemblies |
 | `syncbus` | In-memory, Redis, NATS, Kafka, and mesh invalidation buses |
+| `streambus` | Bounded high-volume streams, replay, QoS, and WebTransport |
 | `validator` | Background cache/store consistency checks |
 | `watchbus` | In-memory, Redis, NATS, and HTTP watch streams |
 
@@ -126,6 +127,7 @@ Recorded results and the standalone load tool are documented in
 - [Caches](docs/cache.md)
 - [Storage adapters](docs/adapter.md)
 - [Synchronization buses](docs/syncbus.md)
+- [StreamBus and WebTransport](docs/streambus.md)
 - [Distributed locks](docs/lock.md)
 - [Leases](docs/leases.md)
 - [Presets](docs/presets.md)

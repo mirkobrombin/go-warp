@@ -12,6 +12,8 @@ Applications upgrading from v1 should read the [v2 migration guide](v2-migration
 - [Adapter](adapter.md) - abstraction over primary storage used for warmup and fallback.
 - [Sync Bus](syncbus.md) - propagation of invalidations across nodes.
 - [Watch Bus](watchbus.md) - lightweight message bus for streaming byte payloads.
+- [StreamBus](streambus.md) - high-volume streams with explicit backpressure,
+  replay, priority, and WebTransport delivery.
 - [Lock](lock.md) - distributed locking primitives built on the bus.
 - [Leases](leases.md) - revocable grouping of keys renewed periodically.
 - [Versioned Cache](versioned-cache.md) - wraps a cache to keep historical values per key.
